@@ -28,7 +28,7 @@
     return payload;
   }
 
-  window.MediaManagerApi = {
+  window.MediaOpsApi = {
     query,
     get(path, params) {
       return request(`${path}${query(params)}`);

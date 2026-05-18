@@ -19,7 +19,7 @@
   function setStatus(text){ if(status) status.textContent = text; }
   function openPlex(){
     started = true;
-    popup = window.open(btn.dataset.url, 'mediamanager-plex-auth', 'popup=yes,width=720,height=760');
+    popup = window.open(btn.dataset.url, 'mediaops-plex-auth', 'popup=yes,width=720,height=760');
     setStatus('Waiting for Plex sign in…');
   }
   async function poll(){

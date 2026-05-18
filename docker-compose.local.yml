@@ -1,9 +1,12 @@
 services:
   app:
+    image: mediaops-app
     build: .
-    container_name: mediamanager-local
+    container_name: mediaops-local
     env_file: .env.local
-    depends_on: [db]
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
@@ -15,12 +18,17 @@ services:
       - /tmp/plex-seerr-analysis/sonarr.db:/imports/sonarr.db:ro
   db:
     image: postgres:16-alpine
-    container_name: mediamanager-db-local
+    container_name: mediaops-db-local
     environment:
-      POSTGRES_DB: mediamanager
-      POSTGRES_USER: mediamanager
-      POSTGRES_PASSWORD: mediamanager
+      POSTGRES_DB: mediaops
+      POSTGRES_USER: mediaops
+      POSTGRES_PASSWORD: mediaops
     volumes:
-      - mediamanager_pg:/var/lib/postgresql/data
+      - mediaops_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediaops -d mediaops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 volumes:
-  mediamanager_pg:
+  mediaops_pg:

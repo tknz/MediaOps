@@ -1,14 +1,14 @@
 {% extends 'base.html' %}
 {% block content %}
 <section class="hero login-hero" data-auth="plex">
-  <p class="eyebrow">MediaManager</p>
+  <p class="eyebrow">MediaOps</p>
   {% if configured %}
     <h1>Sign in with Plex</h1>
-    <p>Use your Plex account to access MediaManager.</p>
+    <p>Use your Plex account to access MediaOps.</p>
     {% if plex_auth_url %}<button class="button" id="plexSignin" data-url="{{ plex_auth_url }}">Sign in with Plex</button>{% else %}<a class="button" href="/auth/start">Try again</a>{% endif %}
     <p class="muted pulse-note" id="plexStatus"></p>
   {% else %}
-    <h1>Set up MediaManager</h1>
+    <h1>Set up MediaOps</h1>
     <p>Connect Plex and choose the server.</p>
     <a class="button" href="/setup">Start setup</a>
   {% endif %}
@@ -21,7 +21,7 @@
   let popup = null;
   function setStatus(text){ if(status) status.textContent = text; }
   function openPlex(){
-    popup = window.open(btn.dataset.url, 'mediamanager-plex-auth', 'popup=yes,width=720,height=760');
+    popup = window.open(btn.dataset.url, 'mediaops-plex-auth', 'popup=yes,width=720,height=760');
     setStatus('Waiting for Plex sign in…');
   }
   async function poll(){

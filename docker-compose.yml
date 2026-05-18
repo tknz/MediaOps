@@ -1,31 +1,37 @@
 services:
   app:
+    image: mediaops-app
     build: .
-    container_name: mediamanager
+    container_name: mediaops
     restart: unless-stopped
     env_file:
       - path: .env
         required: false
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
-      - mediamanager_config:/config
+      - mediaops_config:/config
       - ./imports:/imports:ro
 
   db:
     image: postgres:16-alpine
-    container_name: mediamanager-db
+    container_name: mediaops-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: mediamanager
-      POSTGRES_USER: mediamanager
-      POSTGRES_PASSWORD: mediamanager
+      POSTGRES_DB: mediaops
+      POSTGRES_USER: mediaops
+      POSTGRES_PASSWORD: mediaops
     volumes:
-      - mediamanager_postgres:/var/lib/postgresql/data
+      - mediaops_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediaops -d mediaops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
-  mediamanager_config:
-  mediamanager_postgres:
+  mediaops_config:
+  mediaops_postgres:

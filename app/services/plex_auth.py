@@ -9,7 +9,7 @@ HEADERS = {
     'X-Plex-Version': '0.1.0',
     'X-Plex-Platform': 'Web',
     'X-Plex-Platform-Version': '1.0',
-    'X-Plex-Device': 'MediaManager Web',
+    'X-Plex-Device': 'MediaOps Web',
     'X-Plex-Device-Name': settings.plex_product,
     'X-Plex-Model': 'bundled',
     'Accept': 'application/json',

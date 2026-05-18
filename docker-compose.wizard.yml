@@ -1,15 +1,16 @@
 services:
   app-wizard:
+    image: mediaops-app
     build: .
-    container_name: mediamanager-wizard-local
+    container_name: mediaops-wizard-local
     environment:
-      APP_NAME: MediaManager Wizard Test
+      APP_NAME: MediaOps Wizard Test
       BASE_URL: http://localhost:8001
       SECRET_KEY: local-wizard-secret-change-me
       CONFIG_FILE: /config/config.json
-      DATABASE_URL: postgresql+psycopg://mediamanager:mediamanager@db-wizard:5432/mediamanager
-      PLEX_CLIENT_ID: mediamanager-wizard-local
-      PLEX_PRODUCT: MediaManager
+      DATABASE_URL: postgresql+psycopg://mediaops:mediaops@db-wizard:5432/mediaops
+      PLEX_CLIENT_ID: mediaops-wizard-local
+      PLEX_PRODUCT: MediaOps
       DEV_BYPASS_AUTH: "false"
       DEV_USER: admin
       IMPORT_TAUTULLI_DB: ""
@@ -27,17 +28,17 @@ services:
       - ./config-wizard/art-cache:/config/art-cache
   db-wizard:
     image: postgres:16-alpine
-    container_name: mediamanager-db-wizard-local
+    container_name: mediaops-db-wizard-local
     environment:
-      POSTGRES_DB: mediamanager
-      POSTGRES_USER: mediamanager
-      POSTGRES_PASSWORD: mediamanager
+      POSTGRES_DB: mediaops
+      POSTGRES_USER: mediaops
+      POSTGRES_PASSWORD: mediaops
     volumes:
-      - mediamanager_wizard_pg:/var/lib/postgresql/data
+      - mediaops_wizard_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mediamanager -d mediamanager"]
+      test: ["CMD-SHELL", "pg_isready -U mediaops -d mediaops"]
       interval: 5s
       timeout: 5s
       retries: 20
 volumes:
-  mediamanager_wizard_pg:
+  mediaops_wizard_pg:

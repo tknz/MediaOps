@@ -1819,7 +1819,9 @@ async def user_detail(username: str, request: Request, db: Session = Depends(get
             q = q.where(PlexSession.started_at >= now - timedelta(days=days))
         plays, secs, bytes_, avg_kbps, peak_kbps, tx = db.execute(q).one()
         return {'plays': plays, 'seconds': int(secs or 0), 'bytes': int(bytes_ or 0), 'avg_kbps': float(avg_kbps or 0), 'peak_kbps': float(peak_kbps or 0), 'transcodes': tx}
-    tabs = {'overview', 'graphs', 'history', 'devices', 'ips', 'requests', 'watchlist', 'firewall'}
+    if tab == 'firewall':
+        tab = 'bans'
+    tabs = {'overview', 'graphs', 'history', 'devices', 'ips', 'requests', 'watchlist', 'bans'}
     active_tab = tab if tab in tabs else 'overview'
     profile_user = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
     seerr_user, seerr_quota, seerr_permissions, _ = await seerr_user_context(username)
@@ -2023,7 +2025,7 @@ def add_user_block(
         row.message = message or row.message or default_message
         row.active = True
         db.commit()
-    target = return_to if return_to.startswith('/') else f'/users/{username}#firewall'
+    target = return_to if return_to.startswith('/') else f'/users/{username}?tab=bans'
     return RedirectResponse(target, status_code=303)
 
 
@@ -2036,7 +2038,7 @@ def unban_user_block(username: str, block_id: int, request: Request, db: Session
     if row and row.username.lower() == username.lower():
         row.active = False
         db.commit()
-    target = return_to if return_to.startswith('/') else f'/users/{username}#firewall'
+    target = return_to if return_to.startswith('/') else f'/users/{username}?tab=bans'
     return RedirectResponse(target, status_code=303)
 
 

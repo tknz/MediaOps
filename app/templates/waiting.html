@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block content %}
 <section class="setup-shell">
-  <div class="setup-copy"><p class="eyebrow">Plex sign-in</p><h1>Waiting for Plex</h1><p class="muted">Once Plex approves the login, MediaManager will automatically continue to server selection.</p></div>
+  <div class="setup-copy"><p class="eyebrow">Plex sign-in</p><h1>Waiting for Plex</h1><p class="muted">Once Plex approves the login, MediaOps will automatically continue to server selection.</p></div>
   <article class="setup-card primary-setup-card">
     <div class="setup-step"><span>1</span><div><h2>Complete Plex sign-in</h2><p class="muted">If the Plex window is closed or missing, open it again.</p></div></div>
     {% if plex_auth_url %}<button class="button" id="plexSignin" data-url="{{ plex_auth_url }}">Open Plex sign-in</button>{% endif %}
@@ -16,7 +16,7 @@
   const status = document.getElementById('plexStatus');
   let popup = null;
   function setStatus(text){ if(status) status.textContent = text; }
-  function openPlex(){ popup = window.open(btn.dataset.url, 'mediamanager-plex-auth', 'popup=yes,width=720,height=760'); setStatus('Plex sign-in is open. Waiting for approval…'); }
+  function openPlex(){ popup = window.open(btn.dataset.url, 'mediaops-plex-auth', 'popup=yes,width=720,height=760'); setStatus('Plex sign-in is open. Waiting for approval…'); }
   async function poll(){
     try{
       const r = await fetch('/auth/status', {cache:'no-store'});

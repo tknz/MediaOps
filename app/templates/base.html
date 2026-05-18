@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title or 'MediaManager' }}</title>
+  <title>{{ title or 'MediaOps' }}</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-<header><a href="/">MediaManager</a>{% if user %}<span class="server-pill">{{ media_server_label() }}</span><nav><a href="/admin">Overview</a><a href="/users">Users</a><a href="/live">Live</a><a href="/graphs">Graphs</a><a href="/requests">Requests</a><a href="/history">History</a><a href="/libraries">Libraries</a><a href="/settings">Settings</a></nav><a class="now-chip" id="nowChip" href="/live" aria-label="Open live streams"><b>Now</b><span>Loading…</span></a><span>{{ user.username }}</span><a href="/logout">Sign out</a>{% endif %}</header>
+<header><a href="/">MediaOps</a>{% if user %}<span class="server-pill">{{ media_server_label() }}</span><nav><a href="/admin">Overview</a><a href="/users">Users</a><a href="/live">Live</a><a href="/graphs">Graphs</a><a href="/requests">Requests</a><a href="/history">History</a><a href="/libraries">Libraries</a><a href="/settings">Settings</a></nav><a class="now-chip" id="nowChip" href="/live" aria-label="Open live streams"><b>Now</b><span>Loading…</span></a><span>{{ user.username }}</span><a href="/logout">Sign out</a>{% endif %}</header>
 <main>{% block content %}{% endblock %}</main>
 {% if user %}<script>
 (function(){

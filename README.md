@@ -1,14 +1,15 @@
-# MediaManager
+# MediaOps
 
-MediaManager is a self-hosted media analytics and management app for Plex, Seerr, Radarr, Sonarr, SABnzbd, and Tautulli.
+MediaOps is a self-hosted media analytics and management app for Plex, Seerr, Radarr, Sonarr, SABnzbd, and Tautulli.
 
 It combines live playback visibility, watch history, request moderation, download status, library cleanup, and storage intelligence in one operational interface.
 
 ## Features
 
 - Plex sign-in with admin and standard user views
-- Live playback sessions with bandwidth, transcode, device, and IP details
+- Background Plex live-session collection with bandwidth, transcode, device, and IP details
 - User profiles with watch history, devices, IPs, request data, and streaming policies
+- User-bound IP, device, and streaming bans for moderation
 - Seerr request review with approve, decline, delete, quota, and requester views
 - Radarr and Sonarr inventory views for storage, stale media, unwatched media, monitoring, and delete actions
 - Historical analytics backed by PostgreSQL
@@ -45,12 +46,44 @@ Useful environment variables:
 - `APP_NAME`: display name for the app
 - `BASE_URL`: public URL used for auth callbacks
 - `SECRET_KEY`: session signing secret
-- `DATABASE_URL`: PostgreSQL connection string
+- `DATABASE_URL`: PostgreSQL connection string; overrides the `DB_*` fields when set
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSLMODE`: friendly PostgreSQL settings for Unraid templates and non-Compose installs
 - `PLEX_SERVER_URL` and `PLEX_SERVER_TOKEN`: Plex server access
 - `SEERR_URL`, `RADARR_URL`, `SONARR_URL`, `SABNZBD_URL`, `TAUTULLI_URL`: service URLs
 - `*_API_KEY`: service API keys
 - `IMPORT_*_DB`: optional mounted SQLite databases for bootstrap imports
 
+## Database
+
+MediaOps requires PostgreSQL. The included Compose file runs a `postgres:16-alpine` service named `db`, so the default connection uses Docker DNS:
+
+```text
+postgresql+psycopg://mediaops:mediaops@db:5432/mediaops
+```
+
+For Unraid or other single-container installs, run PostgreSQL separately and configure MediaOps with the friendly fields:
+
+```env
+DB_HOST=192.168.1.50
+DB_PORT=5432
+DB_NAME=mediaops
+DB_USER=mediaops
+DB_PASSWORD=change-me
+DB_SSLMODE=
+```
+
+Advanced installs can provide `DATABASE_URL` directly instead:
+
+```env
+DATABASE_URL=postgresql+psycopg://mediaops:change-me@192.168.1.50:5432/mediaops
+```
+
+SQLite is not a supported production database. MediaOps keeps live-session state, watch history, request history, library analytics, and scheduled ingest data in PostgreSQL.
+
+## Images
+
+Publish the app image separately from PostgreSQL. A public deployment should run MediaOps plus a PostgreSQL container or an existing PostgreSQL server.
+
 ## Safety
 
-Destructive library actions are admin-only and require confirmation in the UI. MediaManager talks to Plex, Seerr, Radarr, and Sonarr through their APIs; it does not modify those applications' databases directly.
+Destructive library actions are admin-only and require confirmation in the UI. MediaOps talks to Plex, Seerr, Radarr, and Sonarr through their APIs; it does not modify those applications' databases directly.

@@ -3,7 +3,7 @@
   const boot = document.getElementById('librariesBoot');
   if (!root || !boot) return;
 
-  const api = window.MediaManagerApi;
+  const api = window.MediaOpsApi;
   let state = JSON.parse(boot.textContent || '{}');
   let busyAction = null;
 
