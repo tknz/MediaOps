@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
 {% block content %}
-<section class="graphs-hero"><div><p class="eyebrow">Setup wizard</p><h1>Connect services</h1><p class="muted">Add API URLs and keys. Test each tile, then save the config file.</p></div><a class="mini link-mini" href="/admin">Skip for now</a></section>
+<section class="graphs-hero"><div><p class="eyebrow">Setup wizard</p><h1>Connect services</h1><p class="muted">Add API URLs and keys. Test each tile, then save the config file.</p></div><a class="mini link-mini" href="/setup">Connect Plex</a></section>
 {% set form_action = '/setup' %}{% set return_to = '/setup/services' %}{% include 'settings_form.html' %}
 {% endblock %}

@@ -28,10 +28,16 @@ class Settings(BaseSettings):
 
     seerr_url: str = ''
     seerr_api_key: str = ''
+    tautulli_url: str = ''
+    tautulli_api_key: str = ''
+    sabnzbd_url: str = ''
+    sabnzbd_api_key: str = ''
     radarr_url: str = ''
     radarr_api_key: str = ''
+    radarr_instances: str = ''
     sonarr_url: str = ''
     sonarr_api_key: str = ''
+    sonarr_instances: str = ''
 
     import_tautulli_db: str = ''
     import_seerr_db: str = ''
@@ -39,6 +45,8 @@ class Settings(BaseSettings):
     import_sonarr_db: str = ''
     dev_bypass_auth: bool = False
     dev_user: str = 'admin'
+    setup_no_auth: bool = True
+    setup_user: str = 'setup'
     sync_interval_minutes: int = 60
     api_admin_token: str = ''
     api_tokens: str = ''

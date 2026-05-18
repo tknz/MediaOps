@@ -268,6 +268,13 @@ def current_user(request: Request, db: Session):
             user = User(plex_id=f'dev-{settings.dev_user}', username=settings.dev_user, email=None, display_name=settings.dev_user, is_admin=True)
             db.add(user); db.commit(); db.refresh(user)
         return user
+    if settings.setup_no_auth and not configured():
+        setup_name = settings.setup_user or 'setup'
+        user = db.scalar(select(User).where(User.plex_id == f'setup-{setup_name}'))
+        if not user:
+            user = User(plex_id=f'setup-{setup_name}', username=setup_name, email=None, display_name='Setup admin', is_admin=True)
+            db.add(user); db.commit(); db.refresh(user)
+        return user
     plex_id = request.session.get('plex_id')
     if not plex_id:
         return None
@@ -1076,7 +1083,7 @@ def summary_query(db: Session, username: str | None = None):
 @app.get('/', response_class=HTMLResponse)
 async def home(request: Request, db: Session = Depends(get_db)):
     if not settings.dev_bypass_auth and not configured():
-        return RedirectResponse('/setup', status_code=302)
+        return RedirectResponse('/setup/services' if settings.setup_no_auth else '/setup', status_code=302)
     user = current_user(request, db)
     if not user:
         plex_auth_url_value = None

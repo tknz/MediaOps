@@ -37,6 +37,8 @@ It combines live playback visibility, watch history, request moderation, downloa
    http://localhost:8000
    ```
 
+On first run, MediaOps opens the setup screens without Plex sign-in when `SETUP_NO_AUTH=true`. Use that to add service URLs and API keys, then connect Plex from the setup page. After Plex is connected, normal Plex sign-in protects the app.
+
 ## Configuration
 
 Runtime configuration is stored outside the image in `/config`. Keep API keys and generated config files out of git.
@@ -51,7 +53,9 @@ Useful environment variables:
 - `PLEX_SERVER_URL` and `PLEX_SERVER_TOKEN`: Plex server access
 - `SEERR_URL`, `RADARR_URL`, `SONARR_URL`, `SABNZBD_URL`, `TAUTULLI_URL`: service URLs
 - `*_API_KEY`: service API keys
-- `IMPORT_*_DB`: optional mounted SQLite databases for bootstrap imports
+- `SETUP_NO_AUTH`: allow first-run setup before Plex auth is connected; defaults to `true`
+- `SETUP_USER`: temporary local setup admin username while Plex is unconfigured
+- `IMPORT_*_DB`: optional one-time bootstrap import paths
 
 ## Database
 
@@ -78,7 +82,7 @@ Advanced installs can provide `DATABASE_URL` directly instead:
 DATABASE_URL=postgresql+psycopg://mediaops:change-me@192.168.1.50:5432/mediaops
 ```
 
-SQLite is not a supported production database. MediaOps keeps live-session state, watch history, request history, library analytics, and scheduled ingest data in PostgreSQL.
+MediaOps keeps live-session state, watch history, request history, library analytics, and scheduled ingest data in PostgreSQL.
 
 ## Images
 
