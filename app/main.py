@@ -17,7 +17,7 @@ from .models import MediaRequest, PlexSession, User, ActivePlexSession, UserPoli
 from .services.plex_auth import create_pin, fetch_identity, fetch_pin, fetch_resources, choose_server, choose_connection, plex_auth_url
 from .services.tautulli_import import import_tautulli, import_tautulli_api, enrich_tautulli_bandwidth
 from .services.legacy_requests import import_legacy_requests
-from .services.settings_store import all_settings, configured, set_settings, media_server_label
+from .services.settings_store import all_settings, configured, set_settings, media_server_label, settings_sources
 from .services.sync import sync_requests
 from .services.clients import PlexClient, RadarrClient, SeerrClient, ServiceConfig, SonarrClient
 from .services.analytics import weekly_watch, decision_breakdown
@@ -245,6 +245,19 @@ def scheduler_context() -> list[dict]:
             'next_run': job.next_run_time if job else None,
         })
     return rows
+
+
+def settings_template_context(request: Request, values: dict, user, test_kind: str = '', test_ok: str = '', test_message: str = '', import_ok: str = '', import_message: str = '') -> dict:
+    return {
+        'request': request,
+        'values': values,
+        'sources': settings_sources(),
+        'user': user,
+        'services': service_context(values),
+        'jobs': scheduler_context(),
+        'test': {'kind': test_kind, 'ok': test_ok, 'message': test_message},
+        'import_result': {'ok': import_ok, 'message': import_message},
+    }
 
 
 @app.on_event('startup')
@@ -1254,7 +1267,7 @@ def setup_services(request: Request, db: Session = Depends(get_db), test_kind: s
     if not user or not user.is_admin:
         return RedirectResponse('/setup', status_code=302)
     values = all_settings()
-    return templates.TemplateResponse('setup_services.html', {'request': request, 'values': values, 'user': user, 'services': service_context(values), 'jobs': scheduler_context(), 'test': {'kind': test_kind, 'ok': test_ok, 'message': test_message}, 'import_result': {'ok': import_ok, 'message': import_message}})
+    return templates.TemplateResponse('setup_services.html', settings_template_context(request, values, user, test_kind, test_ok, test_message, import_ok, import_message))
 
 
 @app.post('/setup')
@@ -1270,7 +1283,7 @@ def settings_get(request: Request, db: Session = Depends(get_db), test_kind: str
     if not settings.dev_bypass_auth and (not user or not user.is_admin):
         return RedirectResponse('/', status_code=302)
     values = all_settings()
-    return templates.TemplateResponse('settings.html', {'request': request, 'values': values, 'user': user, 'services': service_context(values), 'jobs': scheduler_context(), 'test': {'kind': test_kind, 'ok': test_ok, 'message': test_message}, 'import_result': {'ok': import_ok, 'message': import_message}})
+    return templates.TemplateResponse('settings.html', settings_template_context(request, values, user, test_kind, test_ok, test_message, import_ok, import_message))
 
 
 @app.post('/settings')

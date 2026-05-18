@@ -50,19 +50,45 @@ def _path() -> Path:
     return Path(settings.config_file)
 
 
+def _config_values() -> dict[str, str]:
+    path = _path()
+    if not path.exists():
+        return {}
+    try:
+        values = json.loads(path.read_text())
+    except Exception:
+        return {}
+    return {k: v for k, v in values.items() if k in DEFAULTS}
+
+
+def env_owned() -> set[str]:
+    return {k for k, v in ENV_OVERRIDES.items() if v}
+
+
+def settings_sources() -> dict[str, str]:
+    config_keys = set(_config_values())
+    env_keys = env_owned()
+    return {
+        key: 'env' if key in env_keys else ('config' if key in config_keys else 'default')
+        for key in DEFAULTS
+    }
+
+
 def all_settings() -> dict[str, str]:
     values = dict(DEFAULTS)
-    path = _path()
-    if path.exists():
-        values.update(json.loads(path.read_text()))
+    values.update(_config_values())
     values.update({k: v for k, v in ENV_OVERRIDES.items() if v})
     return values
 
 
 def set_settings(values: dict[str, str]) -> None:
     with _LOCK:
-        merged = all_settings()
-        merged.update({k: v or '' for k, v in values.items() if k in DEFAULTS})
+        owned = env_owned()
+        merged = _config_values()
+        merged.update({k: v or '' for k, v in values.items() if k in DEFAULTS and k not in owned})
+        for key in owned:
+            merged.pop(key, None)
+        merged['_sources'] = {key: 'env' for key in sorted(owned)}
         path = _path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(merged, indent=2, sort_keys=True) + '\n')
