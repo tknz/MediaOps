@@ -112,6 +112,23 @@ def ensure_schema_extensions():
                 'updated_at TIMESTAMP',
                 'last_seen_at TIMESTAMP',
             ],
+            'active_download_items': [
+                'source VARCHAR(64)',
+                'title VARCHAR(512)',
+                'status VARCHAR(128)',
+                'quality VARCHAR(128)',
+                'protocol VARCHAR(64)',
+                'indexer VARCHAR(255)',
+                'timeleft VARCHAR(128)',
+                'size_bytes BIGINT',
+                'size_left_bytes BIGINT',
+                'progress FLOAT',
+                'tracked_download_status VARCHAR(128)',
+                'tracked_download_state VARCHAR(128)',
+                'message TEXT',
+                'download_id VARCHAR(255)',
+                'last_seen_at TIMESTAMP',
+            ],
         }
         for table, columns in extensions.items():
             for col in columns:

@@ -6,7 +6,7 @@
     <div>
       <p class="eyebrow">Current bandwidth</p>
       <strong>{{ '%.1f'|format(live_stats.total_mbps) }} Mb/s</strong>
-      <span>{{ live_stats.active_sessions }} streaming{{ '' if live_stats.active_sessions == 1 else '' }} · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} transcode{{ '' if live_stats.transcodes == 1 else 's' }}</span>
+      <span>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
     </div>
     <div class="bandwidth-graph" aria-hidden="true">
       {% for h in live_stats.bars %}<i style="height:{{ h }}%; animation-delay:-{{ loop.index0 * 0.19 }}s"></i>{% endfor %}
@@ -61,5 +61,20 @@
 <p>Nothing playing right now.</p>
 {% endfor %}
 </div>
+
+<section class="panel ops-panel">
+  <div class="section-head"><div><p class="eyebrow">Operations</p><h2>Downloads and processing</h2></div><span class="muted">{{ ops_stats.remaining_label }} remaining</span></div>
+  <div class="ops-grid">
+  {% for q in downloads %}
+    <article class="ops-card">
+      <div><p class="eyebrow">{{ q.source }} · {{ q.status }}</p><h3>{{ q.title }}</h3>{% if q.message %}<small>{{ q.message }}</small>{% endif %}</div>
+      <div class="progress"><span style="width:{% if q.progress is not none %}{{ q.progress }}{% else %}0{% endif %}%"></span></div>
+      <p class="ops-meta">{{ q.quality or '—' }} · {{ q.indexer or '—' }} · {{ q.timeleft or '—' }}{% if q.size_gb %} · {{ q.size_gb }} GB{% endif %}</p>
+    </article>
+  {% else %}
+    <p class="muted">No active downloads or processing jobs.</p>
+  {% endfor %}
+  </div>
+</section>
 
 {% endblock %}

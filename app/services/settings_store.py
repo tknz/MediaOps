@@ -23,6 +23,7 @@ DEFAULTS = {
     'radarr_instances': settings.radarr_instances or '[]',
     'sonarr_instances': settings.sonarr_instances or '[]',
     'job_plex_live_seconds': '30',
+    'job_downloads_seconds': '30',
     'job_plex_accounts_minutes': '60',
     'job_requests_minutes': str(settings.sync_interval_minutes),
 }

@@ -190,6 +190,26 @@ class ActivePlexSession(Base):
     state: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
+class ActiveDownloadItem(Base):
+    __tablename__ = 'active_download_items'
+    item_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    status: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    quality: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    protocol: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    indexer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    timeleft: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    size_left_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tracked_download_status: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tracked_download_state: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    download_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class UserPolicy(Base):
     __tablename__ = 'user_policies'
     id: Mapped[int] = mapped_column(primary_key=True)

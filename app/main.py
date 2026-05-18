@@ -13,7 +13,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, SessionLocal, ensure_schema_extensions
-from .models import MediaRequest, PlexSession, User, ActivePlexSession, UserPolicy, UserBlock, UserWatchlistItem
+from .models import MediaRequest, PlexSession, User, ActivePlexSession, ActiveDownloadItem, UserPolicy, UserBlock, UserWatchlistItem
 from .services.plex_auth import create_pin, fetch_identity, fetch_pin, fetch_resources, choose_server, choose_connection, plex_auth_url
 from .services.tautulli_import import import_tautulli, import_tautulli_api, enrich_tautulli_bandwidth
 from .services.legacy_requests import import_legacy_requests
@@ -208,6 +208,25 @@ async def scheduled_plex_poll():
         await enforce_policies(db, client, sessions)
 
 
+async def scheduled_downloads_poll():
+    radarr, sonarr = await service_clients()
+    queue = []
+    if radarr:
+        try:
+            payload = await radarr.queue()
+            queue += [normalise_queue_item('Radarr', row) for row in payload.get('records', [])]
+        except Exception:
+            pass
+    if sonarr:
+        try:
+            payload = await sonarr.queue()
+            queue += [normalise_queue_item('Sonarr', row) for row in payload.get('records', [])]
+        except Exception:
+            pass
+    with SessionLocal() as db:
+        reconcile_download_queue(db, queue)
+
+
 def _bounded_int(value, default: int, minimum: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -220,6 +239,7 @@ def scheduler_values(values: dict | None = None) -> dict[str, int]:
     values = values or all_settings()
     return {
         'plex_live_seconds': _bounded_int(values.get('job_plex_live_seconds'), 30, 10, 300),
+        'downloads_seconds': _bounded_int(values.get('job_downloads_seconds'), 30, 10, 300),
         'plex_accounts_minutes': _bounded_int(values.get('job_plex_accounts_minutes'), 60, 15, 1440),
         'requests_minutes': _bounded_int(values.get('job_requests_minutes'), settings.sync_interval_minutes, 5, 1440),
     }
@@ -229,20 +249,22 @@ def configure_scheduler() -> None:
     job_values = scheduler_values()
     scheduler.add_job(scheduled_request_sync, 'interval', minutes=job_values['requests_minutes'], id='request-sync', replace_existing=True, next_run_time=datetime.utcnow())
     scheduler.add_job(scheduled_plex_poll, 'interval', seconds=job_values['plex_live_seconds'], id='plex-poll', replace_existing=True, next_run_time=datetime.utcnow())
+    scheduler.add_job(scheduled_downloads_poll, 'interval', seconds=job_values['downloads_seconds'], id='downloads-poll', replace_existing=True, next_run_time=datetime.utcnow())
     scheduler.add_job(scheduled_plex_account_refresh, 'interval', minutes=job_values['plex_accounts_minutes'], id='plex-account-refresh', replace_existing=True, next_run_time=datetime.utcnow())
 
 
 def scheduler_context() -> list[dict]:
     labels = {
         'plex-poll': ('Plex live sessions', 'Keeps live sessions, devices, session endings and policy enforcement current.'),
+        'downloads-poll': ('Downloads and processing', 'Keeps Radarr and Sonarr queue state current for the operations banner and live view.'),
         'plex-account-refresh': ('Plex accounts', 'Refreshes Plex friends, shared access metadata, profile fields and visible watchlist data.'),
         'request-sync': ('Requests', 'Imports Seerr requests and reconciles Radarr/Sonarr fulfilment state.'),
     }
-    units = {'plex-poll': 'seconds', 'plex-account-refresh': 'minutes', 'request-sync': 'minutes'}
-    setting_names = {'plex-poll': 'job_plex_live_seconds', 'plex-account-refresh': 'job_plex_accounts_minutes', 'request-sync': 'job_requests_minutes'}
+    units = {'plex-poll': 'seconds', 'downloads-poll': 'seconds', 'plex-account-refresh': 'minutes', 'request-sync': 'minutes'}
+    setting_names = {'plex-poll': 'job_plex_live_seconds', 'downloads-poll': 'job_downloads_seconds', 'plex-account-refresh': 'job_plex_accounts_minutes', 'request-sync': 'job_requests_minutes'}
     values = all_settings()
     rows = []
-    for job_id in ['plex-poll', 'plex-account-refresh', 'request-sync']:
+    for job_id in ['plex-poll', 'downloads-poll', 'plex-account-refresh', 'request-sync']:
         job = scheduler.get_job(job_id)
         label, description = labels[job_id]
         rows.append({
@@ -878,7 +900,16 @@ def normalise_queue_item(source: str, item: dict):
     size = item.get('size') or item.get('sizeleft') or 0
     sizeleft = item.get('sizeleft') or 0
     progress = round(100 - ((float(sizeleft) / float(size)) * 100), 1) if size else None
+    messages = item.get('statusMessages') or []
+    message = '; '.join(
+        m for m in (
+            msg.get('message') or msg.get('title') or ''
+            for msg in messages if isinstance(msg, dict)
+        ) if m
+    )
+    item_id = item.get('id') or item.get('downloadId') or item.get('trackedDownloadState') or title
     return {
+        'item_key': f"{source}:{item_id}:{title}"[:240],
         'source': source,
         'title': title,
         'status': item.get('status') or item.get('trackedDownloadStatus') or 'unknown',
@@ -886,8 +917,99 @@ def normalise_queue_item(source: str, item: dict):
         'protocol': item.get('protocol'),
         'indexer': item.get('indexer'),
         'timeleft': item.get('timeleft'),
+        'size_bytes': int(size or 0) if size else None,
+        'size_left_bytes': int(sizeleft or 0) if sizeleft else None,
         'size_gb': round(float(size or 0)/1e9, 2) if size else None,
         'progress': progress,
+        'tracked_download_status': item.get('trackedDownloadStatus'),
+        'tracked_download_state': item.get('trackedDownloadState'),
+        'message': message or item.get('errorMessage'),
+        'download_id': item.get('downloadId'),
+    }
+
+
+def reconcile_download_queue(db: Session, queue: list[dict]) -> tuple[int, int]:
+    now = datetime.utcnow()
+    seen = set()
+    for item in queue:
+        key = str(item.get('item_key') or f"{item.get('source')}:{item.get('title')}")
+        seen.add(key)
+        row = db.get(ActiveDownloadItem, key)
+        values = {
+            'source': item.get('source') or 'Unknown',
+            'title': item.get('title') or 'Unknown',
+            'status': item.get('status'),
+            'quality': item.get('quality'),
+            'protocol': item.get('protocol'),
+            'indexer': item.get('indexer'),
+            'timeleft': item.get('timeleft'),
+            'size_bytes': item.get('size_bytes'),
+            'size_left_bytes': item.get('size_left_bytes'),
+            'progress': item.get('progress'),
+            'tracked_download_status': item.get('tracked_download_status'),
+            'tracked_download_state': item.get('tracked_download_state'),
+            'message': item.get('message'),
+            'download_id': item.get('download_id'),
+            'last_seen_at': now,
+        }
+        if not row:
+            db.add(ActiveDownloadItem(item_key=key, **values))
+        else:
+            for attr, value in values.items():
+                setattr(row, attr, value)
+    stale = db.scalars(select(ActiveDownloadItem)).all()
+    removed = 0
+    for row in stale:
+        if row.item_key not in seen:
+            db.delete(row)
+            removed += 1
+    db.commit()
+    return len(seen), removed
+
+
+def download_item_payload(row: ActiveDownloadItem) -> dict:
+    size = int(row.size_bytes or 0)
+    return {
+        'item_key': row.item_key,
+        'source': row.source,
+        'title': row.title,
+        'status': row.status or row.tracked_download_status or 'unknown',
+        'quality': row.quality,
+        'protocol': row.protocol,
+        'indexer': row.indexer,
+        'timeleft': row.timeleft,
+        'size_bytes': size or None,
+        'size_gb': round(size / 1e9, 2) if size else None,
+        'size_left_bytes': row.size_left_bytes,
+        'progress': row.progress,
+        'tracked_download_status': row.tracked_download_status,
+        'tracked_download_state': row.tracked_download_state,
+        'message': row.message,
+        'download_id': row.download_id,
+        'last_seen_at': iso(row.last_seen_at),
+    }
+
+
+def active_download_rows(db: Session) -> list[ActiveDownloadItem]:
+    return db.scalars(select(ActiveDownloadItem).order_by(ActiveDownloadItem.last_seen_at.desc(), ActiveDownloadItem.title)).all()
+
+
+def active_download_payloads(db: Session) -> list[dict]:
+    return [download_item_payload(row) for row in active_download_rows(db)]
+
+
+def ops_stats(downloads: list[dict]) -> dict:
+    active = [d for d in downloads if (d.get('status') or '').lower() not in {'completed', 'complete'}]
+    processing = [d for d in downloads if 'process' in ((d.get('status') or '') + ' ' + (d.get('tracked_download_state') or '')).lower()]
+    size_left = sum(int(d.get('size_left_bytes') or 0) for d in active)
+    total_size = sum(int(d.get('size_bytes') or 0) for d in active)
+    return {
+        'downloads': len(downloads),
+        'active_downloads': len(active),
+        'processing': len(processing),
+        'remaining_bytes': size_left,
+        'remaining_label': format_bytes(size_left) if size_left else '0 B',
+        'total_label': format_bytes(total_size) if total_size else '0 B',
     }
 
 
@@ -1508,8 +1630,9 @@ def me_api(context: AuthContext = Depends(require_auth)):
 async def live_summary_api(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
-        return JSONResponse({'sessions': []})
+        return JSONResponse({'sessions': [], 'downloads': []})
     sessions = [active_session_payload(row) for row in active_live_rows(db)]
+    downloads = active_download_payloads(db)
     active = [s for s in sessions if (s.get('state') or '').lower() != 'paused']
     active_kbps = sum(int(s.get('bandwidth') or 0) for s in active)
     return JSONResponse({
@@ -1523,8 +1646,10 @@ async def live_summary_api(request: Request, db: Session = Depends(get_db)):
             'bandwidth': s.get('bandwidth'),
             'thumb': s.get('thumb'),
         } for s in sessions],
+        'downloads': downloads,
         'active_bandwidth_kbps': active_kbps,
         'active_streams': len(active),
+        'ops': ops_stats(downloads),
     })
 
 
@@ -1692,10 +1817,13 @@ async def admin_overview_api(period: str = 'all', db: Session = Depends(get_db),
 @app.get('/api/live')
 async def live_api(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     sessions = await enriched_active_payloads(db)
+    downloads = active_download_payloads(db)
     return {
         'user': api_user_payload(context),
         'stats': live_stats_from_payloads(sessions),
         'sessions': sessions,
+        'downloads': downloads,
+        'ops': ops_stats(downloads),
     }
 
 
@@ -1703,19 +1831,7 @@ async def live_api(db: Session = Depends(get_db), context: AuthContext = Depends
 async def downloads_api(status: str = 'all', db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     require_api_write(context, '*')
     radarr, sonarr = await service_clients()
-    queue = []
-    if radarr:
-        try:
-            payload = await radarr.queue()
-            queue += [normalise_queue_item('Radarr', row) for row in payload.get('records', [])]
-        except Exception:
-            pass
-    if sonarr:
-        try:
-            payload = await sonarr.queue()
-            queue += [normalise_queue_item('Sonarr', row) for row in payload.get('records', [])]
-        except Exception:
-            pass
+    queue = active_download_payloads(db)
     movie_map, series_map = await arr_maps(radarr, sonarr)
     rows = consolidated_requests(db, 200)
     status_counts = {'pending': 0, 'approved': 0, 'available': 0, 'declined': 0}
@@ -1752,19 +1868,7 @@ async def downloads_page(request: Request, db: Session = Depends(get_db)):
     if not user or not user.is_admin:
         return RedirectResponse('/', status_code=302)
     radarr, sonarr = await service_clients()
-    queue = []
-    if radarr:
-        try:
-            payload = await radarr.queue()
-            queue += [normalise_queue_item('Radarr', row) for row in payload.get('records', [])]
-        except Exception:
-            pass
-    if sonarr:
-        try:
-            payload = await sonarr.queue()
-            queue += [normalise_queue_item('Sonarr', row) for row in payload.get('records', [])]
-        except Exception:
-            pass
+    queue = active_download_payloads(db)
     movie_map, series_map = await arr_maps(radarr, sonarr)
     rows = consolidated_requests(db, 200)
     status_counts = {'pending': 0, 'approved': 0, 'available': 0, 'declined': 0}
@@ -1874,6 +1978,7 @@ async def trigger_download_search(request: Request, title: str = Form(...), requ
                 await sonarr.trigger_search(int(series['id']))
     except Exception:
         pass
+    await scheduled_downloads_poll()
     return RedirectResponse('/downloads', status_code=303)
 
 
@@ -2039,8 +2144,12 @@ async def live(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse('/', status_code=302)
     cfg = all_settings()
     enriched_sessions = await enriched_active_payloads(db)
+    downloads = active_download_payloads(db)
     live_stats = live_stats_from_payloads(enriched_sessions)
-    response = templates.TemplateResponse('live.html', {'request': request, 'user': user, 'sessions': enriched_sessions, 'config': cfg, 'live_stats': live_stats})
+    response = templates.TemplateResponse('live.html', {
+        'request': request, 'user': user, 'sessions': enriched_sessions, 'downloads': downloads,
+        'ops_stats': ops_stats(downloads), 'config': cfg, 'live_stats': live_stats,
+    })
     response.headers['Refresh'] = '10'
     response.headers['Cache-Control'] = 'no-store'
     return response

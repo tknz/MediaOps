@@ -18,16 +18,24 @@
   let timer=null;
   let inFlight=null;
   const visibleLimit=()=>window.matchMedia('(min-width: 1500px)').matches ? 4 : 3;
-  const signature=items=>items.map(s=>[s.session_key,s.user,s.title,s.state,s.thumb].join('|')).join('~');
-  function render(items){
-    const nextSignature=signature(items);
+  const signature=(sessions,downloads)=>sessions.map(s=>['s',s.session_key,s.user,s.title,s.state,s.thumb].join('|')).concat(downloads.map(d=>['d',d.item_key,d.source,d.title,d.status,d.progress].join('|'))).join('~');
+  function render(sessions,downloads){
+    const nextSignature=signature(sessions,downloads);
     if(nextSignature===lastSignature) return;
     lastSignature=nextSignature;
-    if(!items.length){ chip.classList.add('idle'); chip.innerHTML='<b>Now</b><span>Idle</span>'; return; }
+    if(!sessions.length && !downloads.length){ chip.classList.add('idle'); chip.innerHTML='<b>Now</b><span>Idle</span>'; return; }
     chip.classList.remove('idle');
     const limit=visibleLimit();
+    const ops=downloads.map(d=>({kind:'download',...d}));
+    const items=sessions.map(s=>({kind:'stream',...s})).concat(ops);
     const shown=items.slice(0,limit);
-    chip.innerHTML='<b>Now</b>'+shown.map(s=>`<span class="now-person">${s.thumb ? `<img src="/plex-image?path=${encodeURIComponent(s.thumb)}" alt="">` : '<i></i>'}<em><strong>${esc(s.user)}</strong><small>${esc(s.title)}</small></em></span>`).join('')+(items.length>limit?`<small class="now-more">+${items.length-limit}</small>`:'');
+    chip.innerHTML='<b>Now</b>'+shown.map(item=>{
+      if(item.kind==='download'){
+        const progress=item.progress==null?'':` ${Math.round(Number(item.progress))}%`;
+        return `<span class="now-person now-download"><i></i><em><strong>${esc(item.source)}</strong><small>${esc(item.title)}${esc(progress)}</small></em></span>`;
+      }
+      return `<span class="now-person">${item.thumb ? `<img src="/plex-image?path=${encodeURIComponent(item.thumb)}" alt="">` : '<i></i>'}<em><strong>${esc(item.user)}</strong><small>${esc(item.title)}</small></em></span>`;
+    }).join('')+(items.length>limit?`<small class="now-more">+${items.length-limit}</small>`:'');
   }
   function schedule(delay){
     clearTimeout(timer);
@@ -41,9 +49,9 @@
     try{
       const r=await fetch('/api/live-summary', {cache:'no-store', signal:controller.signal});
       const j=await r.json();
-      render(j.sessions||[]);
+      render(j.sessions||[], j.downloads||[]);
     } catch(e){
-      if(!controller.signal.aborted) render([]);
+      if(!controller.signal.aborted) render([], []);
     } finally {
       if(inFlight===controller){
         inFlight=null;
