@@ -61,6 +61,25 @@ class UserWatchlistItem(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class PlexLibraryItem(Base):
+    __tablename__ = 'plex_library_items'
+    __table_args__ = (UniqueConstraint('key', name='uq_plex_library_item_key'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(128), index=True)
+    guid: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    rating_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(512), index=True)
+    media_type: Mapped[str] = mapped_column(String(32), index=True)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    thumb_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    library: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    library_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    library_uuid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    added_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class PlexSession(Base):
     __tablename__ = 'plex_sessions'
     __table_args__ = (UniqueConstraint('source', 'source_id', name='uq_plex_source_session'),)

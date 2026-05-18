@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import secrets
 from zoneinfo import ZoneInfo
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from fastapi import FastAPI, Request, Depends, Form, Body, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -26,7 +26,9 @@ from .services.network_enrichment import reverse_dns, lookup_isp
 from .services.policies import enforce_policies
 from .services.art_cache import ensure_art_cached
 from .services.plex_users import refresh_plex_accounts
+from .services.library_catalog import sync_plex_library_catalog
 from .services.service_tests import test_service
+from .services.request_intelligence import pending_request_payload
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
 
@@ -62,6 +64,14 @@ MANAGED_SEERR_PERMS = (
 )
 
 SERVER_TZ = ZoneInfo('Pacific/Auckland')
+
+OVERVIEW_PERIODS = (
+    {'key': 'all', 'label': 'All time', 'short_label': 'All time', 'days': None},
+    {'key': '12m', 'label': 'Past 12 months', 'short_label': '12 months', 'days': 365},
+    {'key': '6m', 'label': 'Past 6 months', 'short_label': '6 months', 'days': 183},
+    {'key': '30d', 'label': 'Past 30 days', 'short_label': '30 days', 'days': 30},
+)
+OVERVIEW_PERIOD_BY_KEY = {period['key']: period for period in OVERVIEW_PERIODS}
 
 
 def public_url(path: str = '') -> str:
@@ -1050,6 +1060,12 @@ def media_display_title(row: PlexSession) -> str:
     return row.title or row.content_title or 'Unknown title'
 
 
+def overview_library_href(row: PlexSession) -> str:
+    kind = 'series' if session_media_kind(row) == 'show' else 'movie'
+    title = (row.grandparent_title if kind == 'series' else row.title) or row.title or row.content_title or ''
+    return f"/libraries?{urlencode({'q': title, 'kind': kind})}" if title else '/libraries'
+
+
 def diverse_media_rows(rows: list[PlexSession], limit: int = 10, *, bucket: str | None = None, max_per_user: int = 2) -> list[PlexSession]:
     """Pick recent media that represents the library, not only the noisiest watcher.
 
@@ -1080,14 +1096,27 @@ def diverse_media_rows(rows: list[PlexSession], limit: int = 10, *, bucket: str 
             return selected
     return selected
 
-def summary_query(db: Session, username: str | None = None):
-    since = datetime.utcnow() - timedelta(days=365)
+def selected_overview_period(period_key: str | None) -> dict:
+    return OVERVIEW_PERIOD_BY_KEY.get(period_key or 'all', OVERVIEW_PERIOD_BY_KEY['all'])
+
+
+def overview_period_since(period: dict) -> datetime | None:
+    days = period.get('days')
+    return datetime.utcnow() - timedelta(days=int(days)) if days else None
+
+
+def with_since(stmt, column, since: datetime | None):
+    return stmt.where(column >= since) if since else stmt
+
+
+def summary_query(db: Session, username: str | None = None, since: datetime | None = None):
     q = select(
         func.count(PlexSession.id),
         func.coalesce(func.sum(PlexSession.watched_seconds), 0),
         func.coalesce(func.sum(PlexSession.bytes_streamed), 0),
         func.coalesce(func.sum(case((PlexSession.transcode_decision == 'transcode', 1), else_=0)), 0),
-    ).where(PlexSession.started_at >= since)
+    )
+    q = with_since(q, PlexSession.started_at, since)
     if username:
         q = q.where(func.lower(PlexSession.username) == username.lower())
     return db.execute(q).one()
@@ -1387,40 +1416,55 @@ def reconnect_plex(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get('/admin', response_class=HTMLResponse)
-async def admin_page(request: Request, db: Session = Depends(get_db)):
+async def admin_page(request: Request, db: Session = Depends(get_db), period: str = 'all'):
     user = current_user(request, db)
     if not user or not user.is_admin:
         return RedirectResponse('/', status_code=302)
-    sessions, seconds, streamed, transcodes = summary_query(db)
-    since = datetime.utcnow() - timedelta(days=365)
-    leaders = db.execute(select(
+    overview_period = selected_overview_period(period)
+    since = overview_period_since(overview_period)
+    sessions, seconds, streamed, transcodes = summary_query(db, since=since)
+    leaders_stmt = select(
         PlexSession.username,
         func.count(PlexSession.id).label('sessions'),
         func.coalesce(func.sum(PlexSession.watched_seconds), 0).label('seconds'),
         func.coalesce(func.sum(PlexSession.bytes_streamed), 0).label('bytes'),
-    ).where(PlexSession.started_at >= since).group_by(PlexSession.username).order_by(func.sum(PlexSession.watched_seconds).desc()).limit(12)).all()
-    request_leaders = db.execute(select(
+    ).group_by(PlexSession.username).order_by(func.sum(PlexSession.watched_seconds).desc()).limit(12)
+    leaders = db.execute(with_since(leaders_stmt, PlexSession.started_at, since)).all()
+    request_leaders_stmt = select(
         MediaRequest.requester_name,
         func.count(MediaRequest.id).label('requests'),
         func.coalesce(func.sum(MediaRequest.fulfilled_bytes), 0).label('bytes'),
-    ).where(MediaRequest.requested_at >= since).group_by(MediaRequest.requester_name).order_by(func.count(MediaRequest.id).desc()).limit(12)).all()
-    requests = db.scalars(select(MediaRequest).order_by(MediaRequest.requested_at.desc()).limit(20)).all()
-    recent_rows = db.scalars(
+    ).group_by(MediaRequest.requester_name).order_by(func.count(MediaRequest.id).desc()).limit(12)
+    request_leaders = db.execute(with_since(request_leaders_stmt, MediaRequest.requested_at, since)).all()
+    known_usernames = {name.lower() for name in db.execute(select(User.username)).scalars().all()}
+    known_usernames.update(name.lower() for name in db.execute(select(PlexSession.username).group_by(PlexSession.username)).scalars().all())
+    request_leaders = [{
+        'requester_name': row.requester_name,
+        'requests': row.requests,
+        'bytes': row.bytes,
+        'href': f"/users/{quote(row.requester_name, safe='')}?tab=requests" if row.requester_name and row.requester_name.lower() in known_usernames else None,
+    } for row in request_leaders]
+    requests_stmt = select(MediaRequest).order_by(MediaRequest.requested_at.desc()).limit(20)
+    requests = db.scalars(with_since(requests_stmt, MediaRequest.requested_at, since)).all()
+    recent_stmt = (
         select(PlexSession)
         .where(PlexSession.thumb_path.is_not(None))
         .order_by(PlexSession.started_at.desc())
         .limit(240)
-    ).all()
+    )
+    recent_rows = db.scalars(with_since(recent_stmt, PlexSession.started_at, since)).all()
     spotlight_sessions = diverse_media_rows(recent_rows, 8, max_per_user=1)
     unique_shows = diverse_media_rows(recent_rows, 10, bucket='show', max_per_user=2)
     unique_movies = diverse_media_rows(recent_rows, 10, bucket='movie', max_per_user=2)
     for row in set(spotlight_sessions + unique_shows + unique_movies):
         row.cached_thumb = await ensure_art_cached(row.thumb_path) if row.thumb_path else None
+        row.overview_href = overview_library_href(row)
     return templates.TemplateResponse('admin.html', {
         'request': request, 'user': user, 'hours': int(seconds or 0)/3600, 'sessions': sessions,
         'terabytes': int(streamed or 0)/1e12, 'transcodes': transcodes, 'leaders': leaders,
         'request_leaders': request_leaders, 'requests': requests, 'spotlight_sessions': spotlight_sessions,
         'unique_shows': unique_shows, 'unique_movies': unique_movies,
+        'overview_periods': OVERVIEW_PERIODS, 'overview_period': overview_period,
     })
 
 
@@ -1461,6 +1505,45 @@ async def live_summary_api(request: Request, db: Session = Depends(get_db)):
     })
 
 
+@app.get('/api/seerr/pending-requests')
+async def seerr_pending_requests_api(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    require_api_write(context, '*')
+    cfg = all_settings()
+    if not cfg.get('seerr_url') or not cfg.get('seerr_api_key'):
+        return {'requests': [], 'count': 0, 'error': 'Seerr is not configured'}
+    seerr = SeerrClient(ServiceConfig(url=cfg['seerr_url'], api_key=cfg['seerr_api_key']))
+    radarr, sonarr = await service_clients()
+    return await pending_request_payload(db, seerr, radarr, sonarr)
+
+
+@app.post('/api/seerr/requests/{request_id}/approve')
+async def seerr_approve_request_api(request_id: str, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    require_api_write(context, '*')
+    cfg = all_settings()
+    if not cfg.get('seerr_url') or not cfg.get('seerr_api_key'):
+        raise HTTPException(status_code=503, detail='Seerr is not configured')
+    await SeerrClient(ServiceConfig(url=cfg['seerr_url'], api_key=cfg['seerr_api_key'])).approve_request(request_id)
+    row = db.scalar(select(MediaRequest).where(MediaRequest.source == 'seerr', MediaRequest.source_id == str(request_id)))
+    if row:
+        row.status = 'approved'
+        db.commit()
+    return {'ok': True, 'request_id': request_id, 'status': 'approved'}
+
+
+@app.post('/api/seerr/requests/{request_id}/decline')
+async def seerr_decline_request_api(request_id: str, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    require_api_write(context, '*')
+    cfg = all_settings()
+    if not cfg.get('seerr_url') or not cfg.get('seerr_api_key'):
+        raise HTTPException(status_code=503, detail='Seerr is not configured')
+    await SeerrClient(ServiceConfig(url=cfg['seerr_url'], api_key=cfg['seerr_api_key'])).decline_request(request_id)
+    row = db.scalar(select(MediaRequest).where(MediaRequest.source == 'seerr', MediaRequest.source_id == str(request_id)))
+    if row:
+        row.status = 'declined'
+        db.commit()
+    return {'ok': True, 'request_id': request_id, 'status': 'declined'}
+
+
 @app.get('/api/libraries')
 async def libraries_api(
     q: str = '', kind: str = 'all', source: str = 'all',
@@ -1470,6 +1553,12 @@ async def libraries_api(
     payload['user'] = api_user_payload(context)
     payload['server_label'] = media_server_label()
     return payload
+
+
+@app.post('/api/libraries/sync-catalog')
+async def libraries_sync_catalog_api(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    require_api_write(context, 'libraries.write')
+    return await sync_plex_library_catalog(db)
 
 
 @app.post('/api/libraries/manage/monitor')
@@ -1547,24 +1636,29 @@ async def history_api(
 
 
 @app.get('/api/admin/overview')
-async def admin_overview_api(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+async def admin_overview_api(period: str = 'all', db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     require_api_write(context, '*')
-    sessions, seconds, streamed, transcodes = summary_query(db)
-    since = datetime.utcnow() - timedelta(days=365)
-    leaders = db.execute(select(
+    overview_period = selected_overview_period(period)
+    since = overview_period_since(overview_period)
+    sessions, seconds, streamed, transcodes = summary_query(db, since=since)
+    leaders_stmt = select(
         PlexSession.username,
         func.count(PlexSession.id).label('sessions'),
         func.coalesce(func.sum(PlexSession.watched_seconds), 0).label('seconds'),
         func.coalesce(func.sum(PlexSession.bytes_streamed), 0).label('bytes'),
-    ).where(PlexSession.started_at >= since).group_by(PlexSession.username).order_by(func.sum(PlexSession.watched_seconds).desc()).limit(12)).all()
-    request_leaders = db.execute(select(
+    ).group_by(PlexSession.username).order_by(func.sum(PlexSession.watched_seconds).desc()).limit(12)
+    leaders = db.execute(with_since(leaders_stmt, PlexSession.started_at, since)).all()
+    request_leaders_stmt = select(
         MediaRequest.requester_name,
         func.count(MediaRequest.id).label('requests'),
         func.coalesce(func.sum(MediaRequest.fulfilled_bytes), 0).label('bytes'),
-    ).where(MediaRequest.requested_at >= since).group_by(MediaRequest.requester_name).order_by(func.count(MediaRequest.id).desc()).limit(12)).all()
-    requests = db.scalars(select(MediaRequest).order_by(MediaRequest.requested_at.desc()).limit(20)).all()
+    ).group_by(MediaRequest.requester_name).order_by(func.count(MediaRequest.id).desc()).limit(12)
+    request_leaders = db.execute(with_since(request_leaders_stmt, MediaRequest.requested_at, since)).all()
+    requests_stmt = select(MediaRequest).order_by(MediaRequest.requested_at.desc()).limit(20)
+    requests = db.scalars(with_since(requests_stmt, MediaRequest.requested_at, since)).all()
     return {
         'user': api_user_payload(context),
+        'period': {'key': overview_period['key'], 'label': overview_period['label'], 'days': overview_period['days']},
         'kpis': {'hours': int(seconds or 0) / 3600, 'sessions': sessions, 'terabytes': int(streamed or 0) / 1e12, 'transcodes': transcodes},
         'leaders': [{'username': r.username, 'sessions': int(r.sessions or 0), 'seconds': int(r.seconds or 0), 'bytes': int(r.bytes or 0)} for r in leaders],
         'request_leaders': [{'requester_name': r.requester_name, 'requests': int(r.requests or 0), 'bytes': int(r.bytes or 0)} for r in request_leaders],

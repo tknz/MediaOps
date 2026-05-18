@@ -97,6 +97,21 @@ def ensure_schema_extensions():
                 'summary TEXT',
                 'source VARCHAR(64)',
             ],
+            'plex_library_items': [
+                'key VARCHAR(128)',
+                'guid VARCHAR(255)',
+                'rating_key VARCHAR(128)',
+                'title VARCHAR(512)',
+                'media_type VARCHAR(32)',
+                'year INTEGER',
+                'thumb_path VARCHAR(512)',
+                'library VARCHAR(255)',
+                'library_key VARCHAR(128)',
+                'library_uuid VARCHAR(128)',
+                'added_at TIMESTAMP',
+                'updated_at TIMESTAMP',
+                'last_seen_at TIMESTAMP',
+            ],
         }
         for table, columns in extensions.items():
             for col in columns:

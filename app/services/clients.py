@@ -81,6 +81,30 @@ class PlexClient(JsonServiceClient):
         xml = await self.get(f'/library/sections/{key}/all', **{'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 0})
         return int(ET.fromstring(xml).attrib.get('totalSize', '0'))
 
+    async def library_items(self, key: str, start: int = 0, size: int = 500):
+        xml = await self.get(f'/library/sections/{key}/all', **{'X-Plex-Container-Start': start, 'X-Plex-Container-Size': size})
+        root = ET.fromstring(xml)
+        items = []
+        for item in root:
+            if item.tag not in {'Video', 'Directory'}:
+                continue
+            items.append({
+                'key': item.attrib.get('ratingKey') or item.attrib.get('key'),
+                'rating_key': item.attrib.get('ratingKey'),
+                'guid': item.attrib.get('guid'),
+                'title': item.attrib.get('title'),
+                'type': item.attrib.get('type'),
+                'year': item.attrib.get('year'),
+                'thumb': item.attrib.get('thumb'),
+                'library': item.attrib.get('librarySectionTitle'),
+                'library_key': item.attrib.get('librarySectionID'),
+                'added_at': item.attrib.get('addedAt'),
+            })
+        return {
+            'total': int(root.attrib.get('totalSize') or len(items)),
+            'items': items,
+        }
+
     async def sessions(self):
         xml = await self.get('/status/sessions')
         root = ET.fromstring(xml)
@@ -210,6 +234,9 @@ class RadarrClient(JsonServiceClient):
         needle = title.lower().strip()
         return next((m for m in rows if (m.get('title') or '').lower().strip() == needle), None)
 
+    async def releases(self, movie_id: int):
+        return await self.get('/api/v3/release', movieId=movie_id)
+
     async def trigger_search(self, movie_id: int):
         return await self.post_json('/api/v3/command', {'name': 'MoviesSearch', 'movieIds': [movie_id]})
 
@@ -233,6 +260,12 @@ class SonarrClient(JsonServiceClient):
         rows = await self.series()
         needle = title.lower().strip()
         return next((s for s in rows if (s.get('title') or '').lower().strip() == needle), None)
+
+    async def episodes(self, series_id: int):
+        return await self.get('/api/v3/episode', seriesId=series_id)
+
+    async def releases(self, episode_id: int):
+        return await self.get('/api/v3/release', episodeId=episode_id)
 
     async def trigger_search(self, series_id: int):
         return await self.post_json('/api/v3/command', {'name': 'SeriesSearch', 'seriesId': series_id})
