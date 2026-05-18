@@ -103,6 +103,19 @@ def format_server_time(value):
     return local.strftime('%Y-%m-%d %H:%M')
 
 
+def format_age(value, now=None):
+    if not value:
+        return '—'
+    age = (now or datetime.utcnow()) - value
+    if age.days >= 14:
+        return f'{age.days//7}w ago'
+    if age.days >= 1:
+        return f'{age.days}d ago'
+    if age.seconds >= 3600:
+        return f'{age.seconds//3600}h ago'
+    return f'{max(1, age.seconds//60)}m ago'
+
+
 STATUS_LABEL = {'1': 'Requested', '2': 'Approved', '3': 'Declined', '4': 'Available', '5': 'Available', 'pending': 'Requested', 'approved': 'Approved', 'declined': 'Declined', 'available': 'Available'}
 
 
@@ -173,6 +186,28 @@ async def seerr_user_context(username: str):
         return full_user or seerr_user, quota, perms, users
     except Exception:
         return None, None, None, []
+
+
+def plex_permission_context(profile_user: User | None):
+    if not profile_user:
+        return {}
+    return {
+        'read_only': True,
+        'allow_sync': profile_user.allow_sync,
+        'allow_channels': profile_user.allow_channels,
+        'allow_tuners': profile_user.allow_tuners,
+        'allow_camera_upload': profile_user.allow_camera_upload,
+        'allow_subtitle_admin': profile_user.allow_subtitle_admin,
+        'shared_all_libraries': profile_user.shared_all_libraries,
+        'shared_num_libraries': profile_user.shared_num_libraries,
+        'shared_pending': profile_user.shared_pending,
+        'shared_owned': profile_user.shared_owned,
+        'filter_all': profile_user.filter_all,
+        'filter_movies': profile_user.filter_movies,
+        'filter_music': profile_user.filter_music,
+        'filter_photos': profile_user.filter_photos,
+        'filter_television': profile_user.filter_television,
+    }
 
 
 def dedupe_requests(rows):
@@ -2065,7 +2100,7 @@ async def user_detail(username: str, request: Request, db: Session = Depends(get
         return {'plays': plays, 'seconds': int(secs or 0), 'bytes': int(bytes_ or 0), 'avg_kbps': float(avg_kbps or 0), 'peak_kbps': float(peak_kbps or 0), 'transcodes': tx}
     if tab == 'firewall':
         tab = 'bans'
-    tabs = {'overview', 'graphs', 'history', 'devices', 'ips', 'requests', 'watchlist', 'bans'}
+    tabs = {'overview', 'graphs', 'history', 'devices', 'ips', 'requests', 'permissions', 'watchlist', 'bans'}
     active_tab = tab if tab in tabs else 'overview'
     profile_user = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
     seerr_user, seerr_quota, seerr_permissions, _ = await seerr_user_context(username)
@@ -2083,11 +2118,11 @@ async def user_detail(username: str, request: Request, db: Session = Depends(get
     if profile_user:
         watchlist_filters.append(UserWatchlistItem.plex_user_id == str(profile_user.plex_id))
     watchlist_items = db.scalars(select(UserWatchlistItem).where(or_(*watchlist_filters)).order_by(UserWatchlistItem.added_at.desc().nullslast(), UserWatchlistItem.title).limit(120)).all()
-    raw_ips = db.execute(select(PlexSession.ip_address, func.count(PlexSession.id).label('sessions')).where(func.lower(PlexSession.username) == username.lower(), PlexSession.ip_address.is_not(None)).group_by(PlexSession.ip_address).order_by(func.count(PlexSession.id).desc()).limit(20)).all()
+    raw_ips = db.execute(select(PlexSession.ip_address, func.count(PlexSession.id).label('sessions'), func.max(PlexSession.started_at).label('last_used')).where(func.lower(PlexSession.username) == username.lower(), PlexSession.ip_address.is_not(None)).group_by(PlexSession.ip_address).order_by(func.count(PlexSession.id).desc()).limit(20)).all()
     ips = []
     for row in raw_ips:
         enrich = await lookup_isp(row.ip_address)
-        ips.append({'ip_address': row.ip_address, 'sessions': row.sessions, 'ptr': reverse_dns(row.ip_address), **enrich})
+        ips.append({'ip_address': row.ip_address, 'sessions': row.sessions, 'last_used': row.last_used, 'ago': format_age(row.last_used, now), 'ptr': reverse_dns(row.ip_address), **enrich})
     chart = weekly_watch(db, username)
     decisions = decision_breakdown(db, username)
     day_bucket = func.date_trunc('day', PlexSession.started_at)
@@ -2102,27 +2137,17 @@ async def user_detail(username: str, request: Request, db: Session = Depends(get
     raw_devices = db.execute(select(PlexSession.machine_id, PlexSession.player, PlexSession.platform, func.count(PlexSession.id).label('sessions'), func.max(PlexSession.started_at).label('last_used')).where(func.lower(PlexSession.username) == username.lower()).group_by(PlexSession.machine_id, PlexSession.player, PlexSession.platform).order_by(func.max(PlexSession.started_at).desc()).limit(30)).all()
     devices = []
     for d in raw_devices:
-        age = now - d.last_used if d.last_used else None
-        if not age:
-            ago = '—'
-        elif age.days >= 14:
-            ago = f'{age.days//7}w ago'
-        elif age.days >= 1:
-            ago = f'{age.days}d ago'
-        elif age.seconds >= 3600:
-            ago = f'{age.seconds//3600}h ago'
-        else:
-            ago = f'{max(1, age.seconds//60)}m ago'
-        devices.append({'machine_id': d.machine_id, 'player': d.player, 'platform': d.platform, 'sessions': d.sessions, 'last_used': d.last_used, 'ago': ago})
+        devices.append({'machine_id': d.machine_id, 'player': d.player, 'platform': d.platform, 'sessions': d.sessions, 'last_used': d.last_used, 'ago': format_age(d.last_used, now)})
     policy = db.scalar(select(UserPolicy).where(func.lower(UserPolicy.username) == username.lower()))
     blocks = db.scalars(select(UserBlock).where(func.lower(UserBlock.username) == username.lower(), UserBlock.active == True).order_by(UserBlock.created_at.desc())).all()
+    plex_permissions = plex_permission_context(profile_user)
     return templates.TemplateResponse('user_detail.html', {
         'request': request, 'user': user, 'profile_user': profile_user, 'username': username, 'hours': seconds/3600, 'sessions': sessions,
         'terabytes': float(streamed)/1e12, 'transcodes': transcodes, 'history_rows': history_rows,
         'requests': requests, 'chart': chart, 'daily': daily, 'hourly': hourly, 'chart_data': chart_data, 'periods': periods, 'decisions': decisions,
         'devices': devices, 'ips': ips, 'policy': policy, 'blocks': blocks, 'active_tab': active_tab,
         'seerr_user': seerr_user, 'seerr_quota': seerr_quota, 'seerr_permissions': seerr_permissions,
-        'seerr_policy': seerr_policy, 'watchlist_items': watchlist_items, 'perm': PERM, 'status_label': STATUS_LABEL,
+        'seerr_policy': seerr_policy, 'plex_permissions': plex_permissions, 'watchlist_items': watchlist_items, 'perm': PERM, 'status_label': STATUS_LABEL,
     })
 
 
@@ -2246,7 +2271,7 @@ async def save_seerr_user(
         await client.update_user(seerr_user_id, current)
     except Exception:
         pass
-    return RedirectResponse(f'/users/{username}?tab=requests', status_code=303)
+    return RedirectResponse(f'/users/{username}?tab=permissions', status_code=303)
 
 
 @app.post('/users/{username}/blocks')
@@ -2293,7 +2318,7 @@ def unban_user_block(username: str, block_id: int, request: Request, db: Session
 @app.post('/users/{username}/policy')
 def save_user_policy(
     username: str, request: Request, db: Session = Depends(get_db), blocked: bool = Form(False),
-    block_message: str = Form(''), max_concurrent_streams: str = Form(''), max_public_ips: str = Form(''),
+    block_message: str = Form(''), max_concurrent_streams: str = Form(''), max_public_ips: str = Form(''), max_concurrent_devices: str = Form(''),
 ):
     user = current_user(request, db)
     if not user or not user.is_admin:
@@ -2306,8 +2331,9 @@ def save_user_policy(
     row.block_message = block_message or None
     row.max_concurrent_streams = int(max_concurrent_streams) if max_concurrent_streams else None
     row.max_public_ips = int(max_public_ips) if max_public_ips else None
+    row.max_concurrent_devices = int(max_concurrent_devices) if max_concurrent_devices else None
     db.commit()
-    return RedirectResponse(f'/users/{username}', status_code=303)
+    return RedirectResponse(f'/users/{username}?tab=permissions', status_code=303)
 
 
 @app.get('/libraries', response_class=HTMLResponse)

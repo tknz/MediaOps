@@ -4,6 +4,41 @@ from ..models import PolicyActionLog, UserBlock, UserPolicy
 from .clients import PlexClient
 
 
+def session_device_identity(session: dict) -> str | None:
+    machine_id = str(session.get('machine_identifier') or session.get('machine_id') or '').strip()
+    if machine_id:
+        return f'machine:{machine_id}'
+    parts = [
+        session.get('product'),
+        session.get('device'),
+        session.get('platform'),
+        session.get('platform_version'),
+        session.get('player'),
+    ]
+    value = '|'.join(str(part).strip().lower() for part in parts if str(part or '').strip())
+    return f'device:{value}' if value else None
+
+
+def sessions_over_device_limit(items: list[dict], limit: int) -> list[dict]:
+    allowed = set()
+    denied = set()
+    targets = []
+    for session in items:
+        identity = session_device_identity(session)
+        if not identity:
+            continue
+        if identity in allowed:
+            continue
+        if identity in denied:
+            continue
+        if len(allowed) < limit:
+            allowed.add(identity)
+            continue
+        denied.add(identity)
+        targets.extend(i for i in items if session_device_identity(i) == identity)
+    return targets
+
+
 async def enforce_policies(db: Session, client: PlexClient, sessions: list[dict]):
     policies = {p.username.lower(): p for p in db.query(UserPolicy).all()}
     blocks = {}
@@ -40,6 +75,10 @@ async def enforce_policies(db: Session, client: PlexClient, sessions: list[dict]
         elif policy and policy.max_concurrent_streams and len(items) > policy.max_concurrent_streams:
             reason = f'Your account is already using the maximum allowed number of streams ({policy.max_concurrent_streams}). Please stop another stream or contact your server administrator.'
             targets = items[policy.max_concurrent_streams:]
+        elif policy and policy.max_concurrent_devices:
+            targets = sessions_over_device_limit(items, policy.max_concurrent_devices)
+            if targets:
+                reason = f'Your account is already using the maximum allowed number of devices ({policy.max_concurrent_devices}). Please stop another stream or contact your server administrator.'
         elif policy and policy.max_public_ips:
             public_ips = {s.get('remote_public_address') for s in items if s.get('remote_public_address')}
             if len(public_ips) > policy.max_public_ips:

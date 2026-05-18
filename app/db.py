@@ -129,6 +129,9 @@ def ensure_schema_extensions():
                 'download_id VARCHAR(255)',
                 'last_seen_at TIMESTAMP',
             ],
+            'user_policies': [
+                'max_concurrent_devices INTEGER',
+            ],
         }
         for table, columns in extensions.items():
             for col in columns:

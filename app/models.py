@@ -218,6 +218,7 @@ class UserPolicy(Base):
     block_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     max_concurrent_streams: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_public_ips: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_concurrent_devices: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
