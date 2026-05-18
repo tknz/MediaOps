@@ -1,0 +1,9 @@
+{% from '_weekly_chart.html' import weekly_hours %}
+{% extends 'base.html' %}
+{% block content %}
+<h1>{{ library.title }}</h1>
+<div class="stats"><article><b>{{ library.count }}</b><span>items</span></article><article><b>{{ library.type }}</b><span>library type</span></article></div>
+{{ weekly_hours(weekly_chart, 'Weekly watch hours', 'Library demand') }}
+<h2>Most watched titles</h2>
+<table><thead><tr><th>Title</th><th>Hours</th><th>Plays</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{ r.title }}</td><td>{{ '%.1f'|format(r.seconds/3600) }}</td><td>{{ r.plays }}</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% macro weekly_hours(chart, title='Weekly watch hours', eyebrow='Demand') -%}
+<section class="panel useful-chart-panel">
+  <div class="section-head"><div><p class="eyebrow">{{ eyebrow }}</p><h2>{{ title }}</h2><p class="muted">Hours</p></div><span class="muted">last {{ chart.weeks }} weeks</span></div>
+  <div class="useful-svg-wrap">
+    <svg viewBox="0 0 980 320" role="img" aria-label="{{ title }}">
+      <line x1="70" y1="250" x2="946" y2="250" class="axis"/>
+      <line x1="70" y1="150" x2="946" y2="150" class="gridline"/>
+      <line x1="70" y1="50" x2="946" y2="50" class="gridline"/>
+      <text x="16" y="254" class="scale">0h</text>
+      <text x="16" y="154" class="scale">{{ '%.1f'|format(chart.half) if chart.half < 10 else chart.half|round|int }}h</text>
+      <text x="16" y="54" class="scale">{{ '%.1f'|format(chart.max) if chart.max < 10 else chart.max|round|int }}h</text>
+      {% for p in chart.points %}
+        {% set slot = 860 / (chart.points|length if chart.points|length else 1) %}
+        {% set x = 78 + loop.index0 * slot %}
+        {% set w = [slot - 5, 5]|max %}
+        {% set h = ((p.hours / chart.max) * 200)|round|int if chart.max else 0 %}
+        <rect x="{{ x }}" y="{{ 250 - h }}" width="{{ w }}" height="{{ h }}" rx="3" class="useful-bar"><title>{{ p.label }} · {{ p.hours }}h</title></rect>
+        {% if loop.index0 % 3 == 0 or loop.last %}<text x="{{ x }}" y="280" class="tick" transform="rotate(32 {{ x }} 280)">{{ p.label }}</text>{% endif %}
+      {% endfor %}
+    </svg>
+  </div>
+</section>
+{%- endmacro %}

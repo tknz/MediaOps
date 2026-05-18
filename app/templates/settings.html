@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="graphs-hero"><div><p class="eyebrow">Configuration</p><h1>Settings</h1><p class="muted">Reconnect Plex, test service API keys, and add extra Radarr/Sonarr instances.</p></div></section>
+{% set form_action = '/settings' %}{% set return_to = '/settings' %}{% include 'settings_form.html' %}
+{% endblock %}

@@ -1,0 +1,93 @@
+{% extends 'base.html' %}
+{% macro item_json(item) -%}
+{
+  "kind": {{ item.kind|tojson }},
+  "id": {{ item.id|tojson }},
+  "title": {{ item.title|tojson }},
+  "year": {{ item.year|tojson }},
+  "source": {{ item.source|tojson }},
+  "source_index": {{ item.source_index|tojson }},
+  "path": {{ item.path|tojson }},
+  "size": {{ item.size|tojson }},
+  "size_label": {{ item.size_label|tojson }},
+  "available": {{ item.available|tojson }},
+  "monitored": {{ item.monitored|tojson }},
+  "quality": {{ item.quality|tojson }},
+  "poster": {{ item.poster|tojson }},
+  "plays": {{ item.plays|default(0)|tojson }},
+  "watch_hours": {{ item.watch_hours|default(0)|tojson }},
+  "streamed_bytes": {{ item.streamed_bytes|default(0)|tojson }},
+  "last_watched_label": {{ item.last_watched_label|default('Never watched')|tojson }},
+  "stale_days": {{ item.stale_days|default(99999)|tojson }},
+  "seasons": {{ item.seasons|default(none)|tojson }}
+}
+{%- endmacro %}
+{% macro item_array(rows) -%}
+[{% for item in rows %}{{ item_json(item) }}{{ "," if not loop.last }}{% endfor %}]
+{%- endmacro %}
+{% block content %}
+<div id="librariesApp" class="libraries-api-shell" aria-live="polite"></div>
+<script id="librariesBoot" type="application/json">
+{
+  "user": {"is_admin": {{ user.is_admin|tojson }}},
+  "server_label": {{ media_server_label()|tojson }},
+  "filters": {"q": {{ q|tojson }}, "kind": {{ kind|tojson }}, "source": {{ source|tojson }}},
+  "sources": {{ sources|tojson }},
+  "libraries": [
+    {% for lib in libraries %}
+    {"key": {{ lib.key|tojson }}, "title": {{ lib.title|tojson }}, "type": {{ lib.type|tojson }}, "count": {{ lib.count|default(0)|tojson }}}{{ "," if not loop.last }}
+    {% endfor %}
+  ],
+  "stats": {
+    "movies_count": {{ stats.movies_count|tojson }},
+    "movies_size_label": {{ stats.movies_size|bytes|tojson }},
+    "series_count": {{ stats.series_count|tojson }},
+    "series_size_label": {{ stats.series_size|bytes|tojson }},
+    "total_size_label": {{ stats.total_size|bytes|tojson }},
+    "movie_top": {{ item_array(stats.movie_top) }},
+    "series_top": {{ item_array(stats.series_top) }},
+    "stale_large": {{ item_array(stats.stale_large) }},
+    "never_watched": {{ item_array(stats.never_watched) }},
+    "recently_watched": {{ item_array(stats.recently_watched) }}
+  },
+  "items": {{ item_array(items) }},
+  "selected_detail": {% if selected_detail %}{
+    "item": {{ item_json(selected_detail.item) }},
+    "plays": {{ selected_detail.plays|tojson }},
+    "watch_hours": {{ selected_detail.watch_hours|tojson }},
+    "streamed_bytes_label": {{ selected_detail.streamed_bytes|bytes|tojson }},
+    "transcodes": {{ selected_detail.transcodes|tojson }},
+    "remote_plays": {{ selected_detail.remote_plays|tojson }},
+    "users": {{ selected_detail.users|tojson }},
+    "devices": {{ selected_detail.devices|tojson }},
+    "last_watched_label": {{ selected_detail.item.last_watched_label|tojson }},
+    "last_watched_at": {{ selected_detail.last_watched.strftime('%Y-%m-%d %H:%M')|tojson if selected_detail.last_watched else 'null' }},
+    "weekly_chart": {{ selected_detail.weekly_chart|tojson }},
+    "user_rows": [
+      {% for r in selected_detail.user_rows %}
+      {"username": {{ r.username|tojson }}, "plays": {{ r.plays|tojson }}, "hours": {{ '%.1f'|format(r.seconds/3600)|tojson }}, "last": {{ r.last.strftime('%Y-%m-%d')|tojson if r.last else 'null' }}}{{ "," if not loop.last }}
+      {% endfor %}
+    ],
+    "device_rows": [
+      {% for r in selected_detail.device_rows %}
+      {"device": {{ r.device|tojson }}, "plays": {{ r.plays|tojson }}, "last": {{ r.last.strftime('%Y-%m-%d')|tojson if r.last else 'null' }}}{{ "," if not loop.last }}
+      {% endfor %}
+    ],
+    "episode_rows": [
+      {% for r in selected_detail.episode_rows %}
+      {"title": {{ r.title|tojson }}, "parent_media_index": {{ r.parent_media_index|tojson }}, "media_index": {{ r.media_index|tojson }}, "plays": {{ r.plays|tojson }}, "hours": {{ '%.1f'|format(r.seconds/3600)|tojson }}, "last": {{ r.last.strftime('%Y-%m-%d')|tojson if r.last else 'null' }}}{{ "," if not loop.last }}
+      {% endfor %}
+    ],
+    "history_rows": [
+      {% for entry in selected_detail.history_rows %}
+      {% set r = entry.row %}
+      {"when_date": {{ r.started_at.strftime('%Y-%m-%d')|tojson }}, "when_time": {{ r.started_at.strftime('%H:%M')|tojson }}, "user": {{ r.username|tojson }}, "title": {{ entry.display_title|tojson }}, "watched_minutes": {{ ((r.watched_seconds/60)|round|int)|tojson }}, "reach": {{ (r.reach or '—')|tojson }}, "decision": {{ (r.transcode_decision or '—')|tojson }}, "player": {{ (r.player or r.platform or '—')|tojson }}}{{ "," if not loop.last }}
+      {% endfor %}
+    ]
+  }{% else %}null{% endif %},
+  "errors": {{ errors|tojson }}
+}
+</script>
+<script src="/static/api-client.js"></script>
+<script src="/static/libraries.js"></script>
+{% endblock %}

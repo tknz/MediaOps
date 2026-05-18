@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="graphs-hero"><div><p class="eyebrow">Radarr · Sonarr · Seerr</p><h1>Requests</h1></div></section>
+
+<section class="panel"><div class="section-head"><div><p class="eyebrow">Queue</p><h2>Queue</h2></div></div>
+<table><thead><tr><th>Service</th><th>Title</th><th>Status</th><th>Quality</th><th>Indexer</th><th>Progress</th><th>Time left</th></tr></thead><tbody>
+{% for q in queue %}<tr><td>{{ q.source }}</td><td>{{ q.title }}</td><td>{{ q.status }}</td><td>{{ q.quality or '—' }}</td><td>{{ q.indexer or '—' }}</td><td>{% if q.progress is not none %}<div class="mini-progress"><i style="width:{{ q.progress }}%"></i></div><small>{{ q.progress }}%{% if q.size_gb %} · {{ q.size_gb }} GB{% endif %}</small>{% else %}—{% endif %}</td><td>{{ q.timeleft or '—' }}</td></tr>{% else %}<tr><td colspan="7">No active downloads.</td></tr>{% endfor %}
+</tbody></table></section>
+
+<section class="panel"><div class="section-head"><div><p class="eyebrow">Requests</p><h2>Requests</h2></div><span class="muted">Server time: {{ server_time_label }}</span></div>
+<nav class="status-tabs">
+  <a class="{% if selected_status == 'all' %}active{% endif %}" href="/requests">All</a>
+  <a class="status-tab-pending {% if selected_status == 'pending' %}active{% endif %}" href="/requests?status=pending">Requested <b>{{ status_counts.pending }}</b></a>
+  <a class="status-tab-approved {% if selected_status == 'approved' %}active{% endif %}" href="/requests?status=approved">Approved <b>{{ status_counts.approved }}</b></a>
+  <a class="status-tab-available {% if selected_status == 'available' %}active{% endif %}" href="/requests?status=available">Available <b>{{ status_counts.available }}</b></a>
+  <a class="status-tab-declined {% if selected_status == 'declined' %}active{% endif %}" href="/requests?status=declined">Declined <b>{{ status_counts.declined }}</b></a>
+</nav>
+<table class="request-table"><thead><tr><th>Date</th><th>User</th><th>Title</th><th>Kind</th><th>Status</th><th>Expected release</th><th>Size</th><th></th></tr></thead><tbody>
+{% for item in requests %}{% set r = item.row %}<tr><td>{{ r.requested_at.strftime('%Y-%m-%d') }}</td><td><a href="/users/{{ r.requester_name }}?tab=requests">{{ r.requester_name }}</a></td><td><strong>{{ r.title }}</strong>{% if r.seasons %}<small>Season{{ 's' if ',' in r.seasons else '' }} {{ r.seasons }}</small>{% endif %}</td><td>{{ 'TV' if r.request_type == 'tv' else 'Movie' }}</td><td><span class="status-pill status-{{ item.status_slug }}">{{ item.status }}</span></td><td>{{ item.release or '—' }}</td><td>{% if r.fulfilled_bytes %}{{ '%.1f'|format(r.fulfilled_bytes/1000000000) }} GB{% else %}<span class="muted-cell">—</span>{% endif %}</td><td><div class="row-actions request-actions">{% if item.can_approve %}<form method="post" action="/downloads/requests/{{ r.id }}/approve"><button class="mini-good" type="submit">Approve</button></form>{% endif %}{% if item.can_decline %}<form method="post" action="/downloads/requests/{{ r.id }}/decline" onsubmit="return confirm('Decline this request?')"><button class="mini-muted" type="submit">Decline</button></form>{% endif %}<form method="post" action="/downloads/search"><input type="hidden" name="title" value="{{ r.title }}"><input type="hidden" name="request_type" value="{{ r.request_type }}"><button class="mini-warn" type="submit">Search</button></form><form method="post" action="/downloads/requests/{{ r.id }}/delete" onsubmit="return confirm('Delete this request?')"><button class="mini danger-mini" type="submit">Delete</button></form></div></td></tr>{% else %}<tr><td colspan="8">No requests found.</td></tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

@@ -1,0 +1,5 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Top TV shows</h1>
+<table><thead><tr><th>Show</th><th>Plays</th><th>Hours watched</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{ r.show }}</td><td>{{ r.plays }}</td><td>{{ '%.1f'|format(r.seconds/3600) }}</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

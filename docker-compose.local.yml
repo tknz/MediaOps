@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    container_name: mediamanager-local
+    env_file: .env.local
+    depends_on: [db]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/config
+      - ./config/art-cache:/config/art-cache
+      - /tmp/plex-seerr-analysis/tautulli.db:/imports/tautulli.db:ro
+      - /tmp/plex-seerr-analysis/seerr.db:/imports/seerr.db:ro
+      - /tmp/plex-seerr-analysis/radarr.db:/imports/radarr.db:ro
+      - /tmp/plex-seerr-analysis/sonarr.db:/imports/sonarr.db:ro
+  db:
+    image: postgres:16-alpine
+    container_name: mediamanager-db-local
+    environment:
+      POSTGRES_DB: mediamanager
+      POSTGRES_USER: mediamanager
+      POSTGRES_PASSWORD: mediamanager
+    volumes:
+      - mediamanager_pg:/var/lib/postgresql/data
+volumes:
+  mediamanager_pg:

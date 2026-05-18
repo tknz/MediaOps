@@ -1,0 +1,131 @@
+{% extends 'base.html' %}
+{% macro dur(seconds) -%}
+  {%- set h = (seconds // 3600)|int -%}{%- set m = ((seconds % 3600) // 60)|int -%}{{ h }}h {{ m }}m
+{%- endmacro %}
+{% macro tablink(key, label) -%}
+  <a class="{% if active_tab == key %}active{% endif %}" href="/users/{{ username }}?tab={{ key }}">{{ label }}</a>
+{%- endmacro %}
+{% block content %}
+<section class="user-hero compact-hero">{% if profile_user and profile_user.thumb_url %}<img class="avatar image-avatar" src="{{ profile_user.thumb_url }}" alt="">{% else %}<div class="avatar">{{ username[:1]|upper }}</div>{% endif %}<div><p class="eyebrow">Plex user{% if profile_user and profile_user.email %} · {{ profile_user.email }}{% endif %}{% if seerr_user %} · Seerr linked #{{ seerr_user.id }}{% endif %}</p><h1>{{ profile_user.display_name or profile_user.friendly_name or username if profile_user else username }}</h1><p class="muted">{{ username }}{% if profile_user and profile_user.is_home %} · Home user{% endif %}{% if profile_user and profile_user.is_restricted %} · Restricted{% endif %}{% if profile_user and profile_user.shared_num_libraries is not none %} · {{ profile_user.shared_num_libraries }} shared libraries{% endif %}</p><nav class="user-tabs">{{ tablink('overview','Overview') }}{{ tablink('graphs','Graphs') }}{{ tablink('history','History') }}{{ tablink('devices','Devices') }}{{ tablink('ips','IP addresses') }}{{ tablink('requests','Requests / Seerr') }}{{ tablink('watchlist','Watchlist') }}{{ tablink('firewall','Banned') }}</nav></div></section>
+
+{% if active_tab == 'overview' %}
+<section id="profile" class="panel profile-panel"><div class="section-head"><div><p class="eyebrow">Postgres-backed usage ledger</p><h2>Viewing summary</h2></div></div>{% if profile_user %}<div class="identity-grid"><span><b>Email</b>{{ profile_user.email or '—' }}</span><span><b>Plex ID</b>{{ profile_user.plex_id }}</span><span><b>Share</b>{% if profile_user.shared_pending %}Pending{% elif profile_user.shared_num_libraries is not none %}{{ profile_user.shared_num_libraries }} libraries{% elif profile_user.shared_all_libraries %}All libraries{% else %}—{% endif %}</span><span><b>Sync</b>{{ profile_user.last_plex_sync_at.strftime('%Y-%m-%d %H:%M') if profile_user.last_plex_sync_at else '—' }}</span></div>{% endif %}<div class="period-grid">
+{% for label,p in periods.items() %}<article class="period-card"><span>{{ 'All time' if label == 'all' else label }}</span><strong>{{ p.plays }}</strong><em>plays</em><p>{{ dur(p.seconds) }} watched</p><small>{{ '%.2f'|format(p.bytes/1000000000) }} GB transferred · avg {{ '%.1f'|format(p.avg_kbps/1000) }} Mb/s · peak {{ '%.1f'|format(p.peak_kbps/1000) }} Mb/s · {{ p.transcodes }} transcodes</small></article>{% endfor %}
+</div></section>
+<div class="grid two"><section class="panel"><h2>Playback mix</h2><table><tbody>{% for decision,count in decisions %}<tr><td>{{ decision }}</td><td>{{ count }}</td></tr>{% endfor %}</tbody></table></section><section class="panel"><h2>Recent requests</h2><table><tbody>{% for r in requests[:8] %}<tr><td>{{ r.requested_at.date() }}</td><td>{{ r.title }}</td><td>{% if r.fulfilled_bytes %}{{ '%.1f'|format(r.fulfilled_bytes/1000000000) }} GB{% else %}—{% endif %}</td></tr>{% else %}<tr><td>No requests found for this user yet.</td></tr>{% endfor %}</tbody></table></section></div>
+{% endif %}
+
+{% if active_tab == 'graphs' %}
+<section id="graphs" class="panel"><div class="section-head"><div><p class="eyebrow">Scaled charts with units</p><h2>Usage graphs</h2></div></div><div class="chart-grid">
+  <article class="chart-card"><h3>Watch hours by week</h3><p>Hours watched, grouped by week.</p><canvas id="weeklyWatch"></canvas></article>
+  <article class="chart-card"><h3>Plays by day</h3><p>Play count for the last 30 days.</p><canvas id="dailyPlays"></canvas></article>
+  <article class="chart-card"><h3>Bandwidth by day</h3><p>Data transferred in GB for the last 30 days.</p><canvas id="dailyBandwidth"></canvas></article>
+  <article class="chart-card"><h3>Play count by hour</h3><p>When this user tends to watch.</p><canvas id="hourlyPlays"></canvas></article>
+</div></section>
+{% endif %}
+
+{% if active_tab == 'devices' %}
+<section class="panel"><h2>Devices</h2><p class="muted">Device blocks use Plex machineIdentifier only; if Plex has not given us a stable ID, we do not pretend one exists.</p><table><thead><tr><th>Device</th><th>Platform</th><th>Last used</th><th>Sessions</th><th></th></tr></thead><tbody>{% for r in devices %}<tr><td>{{ r.player or '—' }}<br><small>{{ r.machine_id or 'no stable id' }}</small></td><td>{{ r.platform or '—' }}</td><td>{{ r.ago }}<br><small>{{ r.last_used.strftime('%Y-%m-%d %H:%M') if r.last_used else '—' }}</small></td><td>{{ r.sessions }}</td><td>{% if r.machine_id %}<form method="post" action="/users/{{ username }}/blocks"><input type="hidden" name="block_type" value="device"><input type="hidden" name="value" value="{{ r.machine_id }}"><input type="hidden" name="label" value="{{ r.player or r.platform or r.machine_id }}"><input type="hidden" name="message" value="The device you are connecting from is banned. Please contact your server administrator."><input type="hidden" name="return_to" value="/users/{{ username }}?tab=firewall"><button class="mini-warn">Block device</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></section>
+{% endif %}
+
+{% if active_tab == 'ips' %}
+<section id="ips" class="panel"><h2>IP addresses</h2><p class="muted">Every block here is scoped to <b>{{ username }}</b>; the live poller only kills this user if that same IP reappears.</p><table><thead><tr><th>IP</th><th>PTR</th><th>ISP</th><th>Sessions</th><th></th></tr></thead><tbody>{% for r in ips %}<tr><td>{{ r.ip_address }}</td><td>{{ r.ptr or '—' }}</td><td>{{ r.isp or r.org or '—' }}</td><td>{{ r.sessions }}</td><td><form method="post" action="/users/{{ username }}/blocks"><input type="hidden" name="block_type" value="ip"><input type="hidden" name="value" value="{{ r.ip_address }}"><input type="hidden" name="label" value="{{ r.ptr or r.isp or r.ip_address }}"><input type="hidden" name="message" value="The IP address you are connecting from is banned. Please contact your server administrator."><input type="hidden" name="return_to" value="/users/{{ username }}?tab=firewall"><button class="mini-warn">Block for {{ username }}</button></form></td></tr>{% endfor %}</tbody></table></section>
+{% endif %}
+
+{% if active_tab == 'requests' %}
+<section class="panel request-control-panel"><div class="section-head"><div><p class="eyebrow">Seerr control</p><h2>Request policy</h2></div></div>
+{% if seerr_user %}
+<form id="seerrPolicyForm" class="settings compact-settings" method="post" action="/users/{{ username }}/seerr">
+  <input type="hidden" name="seerr_user_id" value="{{ seerr_user.id }}">
+  <input type="hidden" id="permissionsValue" name="permissions" value="{{ seerr_policy.raw }}" data-base="{{ seerr_policy.base }}">
+  <div class="policy-console">
+    <div class="segmented-block"><span>Request access</span><div class="segmented">
+      <label><input type="radio" name="request_mode" value="disabled" {% if seerr_policy.request_mode == 'disabled' %}checked{% endif %}> Off</label>
+      <label><input type="radio" name="request_mode" value="approval" {% if seerr_policy.request_mode == 'approval' %}checked{% endif %}> Require approval</label>
+      <label><input type="radio" name="request_mode" value="auto" {% if seerr_policy.request_mode == 'auto' %}checked{% endif %}> Auto-approve</label>
+    </div></div>
+    <div class="segmented-block"><span>Plex watchlist auto-requests</span><div class="segmented">
+      <label><input type="radio" name="auto_request_mode" value="off" {% if seerr_policy.auto_request_mode == 'off' %}checked{% endif %}> Off</label>
+      <label><input type="radio" name="auto_request_mode" value="movies" {% if seerr_policy.auto_request_mode == 'movies' %}checked{% endif %}> Movies</label>
+      <label><input type="radio" name="auto_request_mode" value="tv" {% if seerr_policy.auto_request_mode == 'tv' %}checked{% endif %}> TV</label>
+      <label><input type="radio" name="auto_request_mode" value="both" {% if seerr_policy.auto_request_mode == 'both' %}checked{% endif %}> Both</label>
+    </div></div>
+    <div class="check-row">
+      <label><input type="checkbox" name="allow_movies" {% if seerr_policy.allow_movies %}checked{% endif %}> Movies</label>
+      <label><input type="checkbox" name="allow_tv" {% if seerr_policy.allow_tv %}checked{% endif %}> TV series</label>
+      <label><input type="checkbox" name="allow_4k" {% if seerr_policy.allow_4k %}checked{% endif %}> 4K requests</label>
+      <label><input type="checkbox" name="advanced" {% if seerr_policy.advanced %}checked{% endif %}> Advanced options</label>
+    </div>
+    <div class="quota-editor"><label>Movie quota<input name="movie_quota_limit" value="{{ seerr_user.movieQuotaLimit or '' }}" placeholder="∞"><small>requests per window</small></label><label>Movie window<input name="movie_quota_days" value="{{ seerr_user.movieQuotaDays or '' }}" placeholder="7"><small>days</small></label><label>TV quota<input name="tv_quota_limit" value="{{ seerr_user.tvQuotaLimit or '' }}" placeholder="∞"><small>requests per window</small></label><label>TV window<input name="tv_quota_days" value="{{ seerr_user.tvQuotaDays or '' }}" placeholder="7"><small>days</small></label></div>
+    <div class="policy-foot"><p>Linked to Seerr user <b>{{ seerr_user.displayName or seerr_user.plexUsername or username }}</b> · {{ seerr_user.requestCount }} total requests · Plex ID {{ seerr_user.plexId }}</p><button class="button subtle-button" type="submit">Save request policy</button></div>
+  </div>
+</form>
+{% if seerr_quota %}<div class="quota-strip"><span>Movie quota: {{ seerr_quota.movie.used }}/{{ seerr_quota.movie.limit or '∞' }} used</span><span>TV quota: {{ seerr_quota.tv.used }}/{{ seerr_quota.tv.limit or '∞' }} used</span></div>{% endif %}
+{% else %}<p class="muted">No matching Seerr user found. Matching checks Plex username, display name, local username and email.</p>{% endif %}
+</section>
+
+<section class="panel request-table-panel"><div class="section-head"><div><p class="eyebrow">Request ledger</p><h2>{{ requests|length }} recent requests</h2></div></div><table class="request-table"><thead><tr><th>Date</th><th>Title</th><th>Kind</th><th>Status</th><th>Size</th></tr></thead><tbody>{% for r in requests %}<tr><td>{{ r.requested_at.strftime('%Y-%m-%d') }}</td><td><strong>{{ r.title }}</strong>{% if r.seasons %}<small>Season{{ 's' if ',' in r.seasons else '' }} {{ r.seasons }}</small>{% endif %}</td><td>{{ 'TV' if r.request_type == 'tv' else 'Movie' }}</td><td><span class="status-pill status-{{ (status_label.get(r.status, r.status)|lower) }}">{{ status_label.get(r.status, r.status) }}</span></td><td>{% if r.fulfilled_bytes %}{{ '%.1f'|format(r.fulfilled_bytes/1000000000) }} GB{% else %}<span class="muted-cell">—</span>{% endif %}</td></tr>{% else %}<tr><td colspan="5">No requests found for this user yet.</td></tr>{% endfor %}</tbody></table></section>
+<script>
+(function(){
+  const form = document.getElementById('seerrPolicyForm'); if(!form) return;
+  const PERM = {{ perm|tojson }};
+  const out = document.getElementById('permissionsValue');
+  const q = (name, value) => form.querySelector(`[name="${name}"][value="${value}"]`);
+  const checked = name => !!form.querySelector(`[name="${name}"]`)?.checked;
+  function setPermissionValue(){
+    let v = Number(out.dataset.base || 0);
+    const requestMode = form.querySelector('[name="request_mode"]:checked')?.value || 'approval';
+    const autoMode = form.querySelector('[name="auto_request_mode"]:checked')?.value || 'off';
+    if(requestMode !== 'disabled') {
+      v |= PERM.REQUEST | PERM.REQUEST_VIEW;
+      if(checked('allow_movies')) v |= PERM.REQUEST_MOVIE;
+      if(checked('allow_tv')) v |= PERM.REQUEST_TV;
+      if(checked('allow_4k')) v |= PERM.REQUEST_4K | PERM.REQUEST_4K_MOVIE | PERM.REQUEST_4K_TV;
+      if(checked('advanced')) v |= PERM.REQUEST_ADVANCED;
+      if(requestMode === 'auto') {
+        v |= PERM.AUTO_APPROVE;
+        if(checked('allow_movies')) v |= PERM.AUTO_APPROVE_MOVIE;
+        if(checked('allow_tv')) v |= PERM.AUTO_APPROVE_TV;
+        if(checked('allow_4k')) v |= PERM.AUTO_APPROVE_4K || 32768;
+      }
+    }
+    if(autoMode !== 'off') {
+      v |= PERM.AUTO_REQUEST;
+      if(autoMode === 'movies' || autoMode === 'both') v |= PERM.AUTO_REQUEST_MOVIE;
+      if(autoMode === 'tv' || autoMode === 'both') v |= PERM.AUTO_REQUEST_TV;
+    }
+    out.value = String(v);
+  }
+  form.addEventListener('change', setPermissionValue);
+  form.addEventListener('submit', setPermissionValue);
+  setPermissionValue();
+})();
+</script>
+{% endif %}
+
+{% if active_tab == 'watchlist' %}
+<section class="panel request-table-panel"><div class="section-head"><div><p class="eyebrow">Plex watchlist</p><h2>{{ watchlist_items|length }} visible items</h2><p class="muted">Pulled from Plex when this server token can see the watchlist.</p></div></div><table class="request-table"><thead><tr><th>Added</th><th>Title</th><th>Type</th><th>Year</th></tr></thead><tbody>{% for item in watchlist_items %}<tr><td>{% if item.added_at %}{{ item.added_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}</td><td><strong>{{ item.title }}</strong>{% if item.summary %}<small>{{ item.summary }}</small>{% endif %}</td><td>{{ item.media_type or '—' }}</td><td>{{ item.year or '—' }}</td></tr>{% else %}<tr><td colspan="4">No visible Plex watchlist items for this user yet.</td></tr>{% endfor %}</tbody></table></section>
+{% endif %}
+
+{% if active_tab == 'firewall' %}
+{% if user.is_admin %}<section id="banned" class="panel"><h2>Banned</h2><p class="muted">These bans are user-bound. An IP or device listed here only affects <b>{{ username }}</b>, not anyone else using that address or device.</p><table><thead><tr><th>Type</th><th>Value</th><th>Label</th><th>Message</th><th></th></tr></thead><tbody>{% for b in blocks %}<tr><td>{{ b.block_type }}</td><td>{{ b.value }}</td><td>{{ b.label or '—' }}</td><td>{{ b.message or '—' }}</td><td><form method="post" action="/users/{{ username }}/blocks/{{ b.id }}/unban"><input type="hidden" name="return_to" value="/users/{{ username }}?tab=firewall"><button class="mini">Unban</button></form></td></tr>{% else %}<tr><td colspan="5">No active bans.</td></tr>{% endfor %}</tbody></table></section><section id="policy" class="panel"><h2>Streaming policy</h2><form class="settings policy-form friendly-policy" method="post" action="/users/{{ username }}/policy"><fieldset><legend>{{ username }}</legend><label class="toggle-line"><span>Banned from streaming</span><input type="checkbox" name="blocked" value="true" {% if policy and policy.blocked %}checked{% endif %}></label><label>Ban message<input name="block_message" value="{{ policy.block_message if policy and policy.block_message else '' }}" placeholder="Your streaming access is currently banned. Please contact your server administrator."></label><div class="form-grid"><label>Max concurrent streams<select name="max_concurrent_streams"><option value="">Unlimited</option>{% for n in range(1, 11) %}<option value="{{ n }}" {% if policy and policy.max_concurrent_streams == n %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></label><label>Max unique public IPs<select name="max_public_ips"><option value="">Unlimited</option>{% for n in range(1, 6) %}<option value="{{ n }}" {% if policy and policy.max_public_ips == n %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></label></div><p class="muted">Concurrent streams limits total active sessions. Unique public IPs catches account sharing across different WAN addresses at the same time.</p></fieldset><button class="button subtle-button" type="submit">Save streaming policy</button></form></section>{% endif %}
+{% endif %}
+
+{% if active_tab == 'history' %}
+<section class="panel"><h2 id="history">Recent watch history</h2><table><thead><tr><th>When</th><th>Title</th><th>Type</th><th>Watched</th><th>Decision</th><th>Player</th></tr></thead><tbody>{% for r in history_rows %}<tr><td>{{ r.started_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ r.title or 'Unknown title' }}</td><td>{{ r.media_type }}</td><td>{{ (r.watched_seconds/60)|round|int }} min</td><td>{{ r.transcode_decision }}</td><td>{{ r.player or '—' }}</td></tr>{% endfor %}</tbody></table></section>
+{% endif %}
+
+{% if active_tab == 'graphs' %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+<script>
+const chartData = {{ chart_data|tojson }};
+const ink = '#dbe6f0', muted = '#7f8fa3', amber = '#f6a623', blue = '#5cc8ff', coral = '#ff9b54', grid = 'rgba(219,230,240,.12)';
+Chart.defaults.color = muted; Chart.defaults.borderColor = grid; Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+function baseOptions(yLabel){ return {responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}, tooltip:{backgroundColor:'#0b111a', borderColor:'rgba(255,255,255,.15)', borderWidth:1, titleColor:ink, bodyColor:ink}}, scales:{x:{grid:{display:false}, ticks:{maxRotation:0, autoSkip:true, maxTicksLimit:8}}, y:{beginAtZero:true, title:{display:true, text:yLabel}, grid:{color:grid}}}} }
+new Chart(document.getElementById('weeklyWatch'), {type:'line', data:{labels:chartData.weekly.map(p=>p.x), datasets:[{label:'Hours watched', data:chartData.weekly.map(p=>p.hours), borderColor:amber, backgroundColor:'rgba(246,166,35,.18)', fill:true, tension:.35, pointRadius:2}]}, options:baseOptions('hours')});
+new Chart(document.getElementById('dailyPlays'), {type:'bar', data:{labels:chartData.daily.map(p=>p.x), datasets:[{label:'Plays', data:chartData.daily.map(p=>p.plays), backgroundColor:amber}]}, options:baseOptions('plays')});
+new Chart(document.getElementById('dailyBandwidth'), {type:'bar', data:{labels:chartData.daily.map(p=>p.x), datasets:[{label:'GB transferred', data:chartData.daily.map(p=>p.gb), backgroundColor:blue}]}, options:baseOptions('GB')});
+new Chart(document.getElementById('hourlyPlays'), {type:'bar', data:{labels:chartData.hourly.map(p=>p.x), datasets:[{label:'Plays', data:chartData.hourly.map(p=>p.plays), backgroundColor:coral}]}, options:baseOptions('plays')});
+</script>
+{% endif %}
+{% endblock %}

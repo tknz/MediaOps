@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="setup-shell" data-auth="plex">
+  <div class="setup-copy"><p class="eyebrow">Setup wizard</p><h1>{{ "Reconnect Plex" if reconnecting else "Connect Plex" }}</h1><p class="muted">Sign in with Plex, then choose a server.</p></div>
+  <article class="setup-card primary-setup-card">
+    <div class="setup-step"><span>1</span><div><h2>Sign in with Plex</h2><p class="muted">Plex opens in a separate sign-in window.</p></div></div>
+    {% if plex_auth_url %}<button class="button" id="plexSignin" data-url="{{ plex_auth_url }}">{{ "Reconnect with Plex" if reconnecting else "Sign in with Plex" }}</button>{% else %}<p class="muted">Plex is already connected.</p><a class="mini link-mini" href="/setup?reconnect=1">Reconnect Plex</a>{% endif %}
+    <div class="setup-step"><span>2</span><div><h2>Server selection</h2><p class="muted">After sign in, choose the Plex server to use.</p></div></div>
+    <p class="muted pulse-note" id="plexStatus">Waiting for Plex approval…</p><a class="mini link-mini" href="/setup/reset-plex">Start with a fresh Plex pin</a>
+  </article>
+</section>
+{% if plex_auth_url %}
+<script>
+(function(){
+  const btn = document.getElementById('plexSignin');
+  const status = document.getElementById('plexStatus');
+  let popup = null;
+  let started = false;
+  function setStatus(text){ if(status) status.textContent = text; }
+  function openPlex(){
+    started = true;
+    popup = window.open(btn.dataset.url, 'mediamanager-plex-auth', 'popup=yes,width=720,height=760');
+    setStatus('Waiting for Plex sign in…');
+  }
+  async function poll(){
+    try{
+      const r = await fetch('/auth/status', {cache:'no-store'});
+      const j = await r.json();
+      if(j.status === 'connected' || j.status === 'server_select'){
+        try { if(popup && !popup.closed) popup.close(); } catch(e) {}
+        setStatus('Plex connected.');
+        window.location.href = j.redirect || '/setup/services';
+        return;
+      }
+      if(j.status === 'expired' || j.status === 'missing'){
+        setStatus('That Plex sign-in expired. Starting a fresh PIN…');
+        window.location.href = j.redirect || '/setup/reset-plex';
+        return;
+      }
+      if(started) setStatus('Waiting for Plex approval…');
+    } catch(e){
+      setStatus('Still checking Plex…');
+    }
+    setTimeout(poll, 2000);
+  }
+  btn && btn.addEventListener('click', openPlex);
+  poll();
+})();
+</script>
+{% endif %}
+{% endblock %}

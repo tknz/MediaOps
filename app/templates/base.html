@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'MediaManager' }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header><a href="/">MediaManager</a>{% if user %}<span class="server-pill">{{ media_server_label() }}</span><nav><a href="/admin">Overview</a><a href="/users">Users</a><a href="/live">Live</a><a href="/graphs">Graphs</a><a href="/requests">Requests</a><a href="/history">History</a><a href="/libraries">Libraries</a><a href="/settings">Settings</a></nav><a class="now-chip" id="nowChip" href="/live" aria-label="Open live streams"><b>Now</b><span>Loading…</span></a><span>{{ user.username }}</span><a href="/logout">Sign out</a>{% endif %}</header>
+<main>{% block content %}{% endblock %}</main>
+{% if user %}<script>
+(function(){
+  const chip=document.getElementById('nowChip'); if(!chip) return;
+  const esc=s=>String(s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  let lastSignature=null;
+  let timer=null;
+  let inFlight=null;
+  const visibleLimit=()=>window.matchMedia('(min-width: 1500px)').matches ? 4 : 3;
+  const signature=items=>items.map(s=>[s.session_key,s.user,s.title,s.state,s.thumb].join('|')).join('~');
+  function render(items){
+    const nextSignature=signature(items);
+    if(nextSignature===lastSignature) return;
+    lastSignature=nextSignature;
+    if(!items.length){ chip.classList.add('idle'); chip.innerHTML='<b>Now</b><span>Idle</span>'; return; }
+    chip.classList.remove('idle');
+    const limit=visibleLimit();
+    const shown=items.slice(0,limit);
+    chip.innerHTML='<b>Now</b>'+shown.map(s=>`<span class="now-person">${s.thumb ? `<img src="/plex-image?path=${encodeURIComponent(s.thumb)}" alt="">` : '<i></i>'}<em><strong>${esc(s.user)}</strong><small>${esc(s.title)}</small></em></span>`).join('')+(items.length>limit?`<small class="now-more">+${items.length-limit}</small>`:'');
+  }
+  function schedule(delay){
+    clearTimeout(timer);
+    timer=setTimeout(tick, delay);
+  }
+  async function tick(){
+    clearTimeout(timer);
+    if(inFlight) inFlight.abort();
+    const controller=new AbortController();
+    inFlight=controller;
+    try{
+      const r=await fetch('/api/live-summary', {cache:'no-store', signal:controller.signal});
+      const j=await r.json();
+      render(j.sessions||[]);
+    } catch(e){
+      if(!controller.signal.aborted) render([]);
+    } finally {
+      if(inFlight===controller){
+        inFlight=null;
+        schedule(document.hidden ? 30000 : 5000);
+      }
+    }
+  }
+  window.addEventListener('focus', tick);
+  window.addEventListener('online', tick);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) tick(); });
+  window.addEventListener('resize', ()=>{ lastSignature=null; tick(); });
+  tick();
+})();
+</script>{% endif %}
+</body>
+</html>

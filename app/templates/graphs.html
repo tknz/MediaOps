@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% macro nice(v) -%}{{ '%.1f'|format(v) if v < 10 and v != v|int else v|round|int }}{%- endmacro %}
+{% macro bar_chart(rows, max_value, value_key='total', color='var(--accent)', unit='', every=3) -%}
+{% set half = max_value / 2 %}
+<div class="svg-wrap"><svg viewBox="0 0 940 260" role="img" aria-label="{{ value_key }} chart, maximum {{ max_value }}{{ unit }}">
+  <line x1="58" y1="198" x2="914" y2="198" class="axis"/>
+  <line x1="58" y1="122" x2="914" y2="122" class="gridline"/>
+  <line x1="58" y1="46" x2="914" y2="46" class="gridline"/>
+  <text x="10" y="202" class="scale">0{{ unit }}</text>
+  <text x="10" y="126" class="scale">{{ nice(half) }}{{ unit }}</text>
+  <text x="10" y="50" class="scale">{{ nice(max_value) }}{{ unit }}</text>
+  {% for r in rows %}
+    {% set h = ((r[value_key] / max_value) * 152)|round|int if max_value else 0 %}
+    {% set x = 66 + loop.index0 * (830 / (rows|length if rows|length else 1)) %}
+    {% set w = (830 / (rows|length if rows|length else 1)) - 4 %}
+    <rect x="{{ x }}" y="{{ 198 - h }}" width="{{ [w, 4]|max }}" height="{{ h }}" rx="4" fill="{{ color }}"><title>{{ r.label or r.date }} · {{ r[value_key] }}{{ unit }}</title></rect>
+    {% if rows|length <= 18 or loop.index0 % every == 0 %}<text x="{{ x }}" y="224" class="tick" transform="rotate(35 {{ x }} 224)">{{ r.label or r.date }}</text>{% endif %}
+  {% endfor %}
+</svg></div>
+{%- endmacro %}
+{% macro horizontal_bars(rows, max_value, value_key='total', unit='') -%}
+<div class="hbar-list">
+{% for r in rows %}<div class="hbar-row"><span>{{ r.label }}</span><div><i style="width:{{ ((r[value_key] / max_value) * 100)|round|int if max_value else 0 }}%"></i></div><b>{{ r[value_key] }}{{ unit }}</b></div>{% endfor %}
+</div>
+{%- endmacro %}
+{% block content %}
+<section class="graphs-hero">
+  <div><p class="eyebrow">{{ graphs.period_label }} · {{ graphs.scope }}</p><h1>Graphs</h1><p class="muted">Same playback ledger as Overview. The yearly lens should match the Overview streamed total.</p></div>
+  {% if user.is_admin %}<form class="graph-filter" method="get" action="/graphs"><label>Period<select name="days"><option value="365" {% if selected_days == 365 %}selected{% endif %}>Last 12 months</option><option value="90" {% if selected_days == 90 %}selected{% endif %}>Last 90 days</option><option value="30" {% if selected_days == 30 %}selected{% endif %}>Last 30 days</option></select></label><label>User scope<select name="selected_user"><option value="">All users</option>{% for u in users %}<option value="{{ u }}" {% if selected_user == u %}selected{% endif %}>{{ u }}</option>{% endfor %}</select></label><button class="mini">Apply</button></form>{% endif %}
+</section>
+
+<div class="graph-kpis">
+  <article><span>Plays</span><b>{{ graphs.kpis.plays }}</b><small>{{ graphs.kpis.hours }} hours watched · {{ graphs.period_label|lower }}</small></article>
+  <article><span>Streamed</span><b>{{ graphs.kpis.tb }} TB</b><small>same estimate as Overview · avg {{ graphs.kpis.avg_mbps }} Mb/s · peak {{ graphs.kpis.peak_mbps }} Mb/s</small></article>
+  <article><span>Transcodes</span><b>{{ graphs.kpis.transcodes }}</b><small>sessions requiring conversion</small></article>
+  <article><span>Scope</span><b>{{ graphs.scope }}</b><small>{{ graphs.period_label }} playback lens</small></article>
+</div>
+
+<section class="panel graph-wide"><div class="section-head"><div><p class="eyebrow">Playback demand</p><h2>{{ graphs.bucket_label }} plays</h2><p class="muted">Y-axis is play count. Yearly view is grouped weekly so the scale is readable.</p></div></div>{{ bar_chart(graphs.demand, graphs.maxes.demand_plays, 'plays', 'var(--accent)', '', 4 if selected_days == 365 else 3) }}</section>
+
+<div class="graph-board">
+  <section class="panel graph-card"><h2>{{ graphs.bucket_label }} bandwidth</h2><p class="muted">Y-axis is GB streamed for the same playback lens.</p>{{ bar_chart(graphs.demand, graphs.maxes.demand_gb, 'gb', 'var(--blue)', ' GB', 4 if selected_days == 365 else 3) }}</section>
+  <section class="panel graph-card"><h2>Playback decisions</h2><p class="muted">Session count by playback decision.</p>{{ horizontal_bars(graphs.decisions, graphs.maxes.decisions, 'plays') }}</section>
+  <section class="panel graph-card"><h2>Play count by day of week</h2><p class="muted">Total plays by weekday for {{ graphs.period_label|lower }}.</p>{{ bar_chart(graphs.dow, graphs.maxes.dow, 'total', 'var(--accent)', '') }}</section>
+  <section class="panel graph-card"><h2>Play count by hour</h2><p class="muted">Playback distribution by hour for {{ graphs.period_label|lower }}.</p>{{ bar_chart(graphs.hourly, graphs.maxes.hourly, 'total', 'var(--accent)', '') }}</section>
+  <section class="panel graph-card"><h2>Top platforms</h2><p class="muted">Clients creating the most sessions.</p>{{ horizontal_bars(graphs.platforms, graphs.maxes.platforms, 'total') }}</section>
+  <section class="panel graph-card"><h2>Top users</h2><p class="muted">Most active users by play count.</p>{{ horizontal_bars(graphs.users, graphs.maxes.users, 'total') }}</section>
+  <section class="panel graph-card"><h2>Request storage by user</h2><p class="muted">Last 12 months, sorted by fulfilled storage estimate.</p>{{ horizontal_bars(graphs.requesters, graphs.maxes.requesters, 'storage_gb', ' GB') }}</section>
+  <section class="panel graph-card graph-table"><h2>Request count by user</h2><p class="muted">Movie and TV requests from Seerr data.</p><table><thead><tr><th>User</th><th>Movies</th><th>TV</th><th>Total</th></tr></thead><tbody>{% for r in graphs.requesters %}<tr><td>{{ r.label }}</td><td>{{ r.movie }}</td><td>{{ r.tv }}</td><td>{{ r.requests }}</td></tr>{% endfor %}</tbody></table></section>
+</div>
+{% endblock %}

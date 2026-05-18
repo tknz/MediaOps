@@ -1,0 +1,43 @@
+services:
+  app-wizard:
+    build: .
+    container_name: mediamanager-wizard-local
+    environment:
+      APP_NAME: MediaManager Wizard Test
+      BASE_URL: http://localhost:8001
+      SECRET_KEY: local-wizard-secret-change-me
+      CONFIG_FILE: /config/config.json
+      DATABASE_URL: postgresql+psycopg://mediamanager:mediamanager@db-wizard:5432/mediamanager
+      PLEX_CLIENT_ID: mediamanager-wizard-local
+      PLEX_PRODUCT: MediaManager
+      DEV_BYPASS_AUTH: "false"
+      DEV_USER: admin
+      IMPORT_TAUTULLI_DB: ""
+      IMPORT_SEERR_DB: ""
+      IMPORT_RADARR_DB: ""
+      IMPORT_SONARR_DB: ""
+    depends_on:
+      db-wizard:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config-wizard:/config
+      - ./config-wizard/art-cache:/config/art-cache
+  db-wizard:
+    image: postgres:16-alpine
+    container_name: mediamanager-db-wizard-local
+    environment:
+      POSTGRES_DB: mediamanager
+      POSTGRES_USER: mediamanager
+      POSTGRES_PASSWORD: mediamanager
+    volumes:
+      - mediamanager_wizard_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediamanager -d mediamanager"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  mediamanager_wizard_pg:

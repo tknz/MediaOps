@@ -1,0 +1,31 @@
+services:
+  app:
+    build: .
+    container_name: mediamanager
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - mediamanager_config:/config
+      - ./imports:/imports:ro
+
+  db:
+    image: postgres:16-alpine
+    container_name: mediamanager-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mediamanager
+      POSTGRES_USER: mediamanager
+      POSTGRES_PASSWORD: mediamanager
+    volumes:
+      - mediamanager_postgres:/var/lib/postgresql/data
+
+volumes:
+  mediamanager_config:
+  mediamanager_postgres:
