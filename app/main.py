@@ -100,7 +100,7 @@ def format_server_time(value):
     local = dt.astimezone(SERVER_TZ)
     if local.hour == 0 and local.minute == 0 and local.second == 0 and 'T' not in raw:
         return local.strftime('%Y-%m-%d')
-    return local.strftime('%Y-%m-%d %H:%M %Z')
+    return local.strftime('%Y-%m-%d %H:%M')
 
 
 STATUS_LABEL = {'1': 'Requested', '2': 'Approved', '3': 'Declined', '4': 'Available', '5': 'Available', 'pending': 'Requested', 'approved': 'Approved', 'declined': 'Declined', 'available': 'Available'}
@@ -834,15 +834,38 @@ async def arr_maps(radarr: RadarrClient | None, sonarr: SonarrClient | None):
 
 
 def release_for_request(row: MediaRequest, movie_map: dict, series_map: dict):
+    value = release_value_for_request(row, movie_map, series_map)
+    return format_server_time(value)
+
+
+def release_value_for_request(row: MediaRequest, movie_map: dict, series_map: dict):
     if row.request_type == 'movie':
         m = movie_map.get((row.title or '').lower())
         if not m:
             return None
-        return format_server_time(m.get('digitalRelease') or m.get('physicalRelease') or m.get('inCinemas') or m.get('year'))
+        return m.get('digitalRelease') or m.get('physicalRelease') or m.get('inCinemas') or m.get('year')
     s = series_map.get((row.title or '').lower())
     if not s:
         return None
-    return format_server_time(s.get('nextAiring') or s.get('previousAiring') or s.get('firstAired') or s.get('year'))
+    return s.get('nextAiring') or s.get('previousAiring') or s.get('firstAired') or s.get('year')
+
+
+def release_eta_for_request(row: MediaRequest, movie_map: dict, series_map: dict, status_slug: str):
+    if status_slug == 'available':
+        return 'Completed'
+    value = release_value_for_request(row, movie_map, series_map)
+    release_date = _parse_date(str(value)) if value and not (isinstance(value, int) or str(value).isdigit()) else None
+    if not release_date:
+        return None
+    today = datetime.now(SERVER_TZ).date()
+    delta = (release_date.date() - today).days
+    if delta == 0:
+        return 'Today'
+    if delta == 1:
+        return 'Tomorrow'
+    if delta > 1:
+        return f'{delta}d'
+    return 'Overdue'
 
 
 def normalise_queue_item(source: str, item: dict):
@@ -1715,6 +1738,7 @@ async def downloads_api(status: str = 'all', db: Session = Depends(get_db), cont
             **request_payload(row),
             'status_slug': status_slug,
             'release': release_for_request(row, movie_map, series_map),
+            'release_eta': release_eta_for_request(row, movie_map, series_map, status_slug),
             'can_approve': row.source == 'seerr' and bool(row.source_id) and status_slug in {'pending', 'requested'},
             'can_decline': row.source == 'seerr' and bool(row.source_id) and status_slug in {'pending', 'requested'},
         })
@@ -1762,6 +1786,7 @@ async def downloads_page(request: Request, db: Session = Depends(get_db)):
         requests.append({
             'row': row, 'status': status, 'status_slug': status_slug,
             'release': release_for_request(row, movie_map, series_map),
+            'release_eta': release_eta_for_request(row, movie_map, series_map, status_slug),
             'can_approve': row.source == 'seerr' and bool(row.source_id) and status_slug in {'pending', 'requested'},
             'can_decline': row.source == 'seerr' and bool(row.source_id) and status_slug in {'pending', 'requested'},
         })
