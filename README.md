@@ -1,26 +1,26 @@
 # MediaOps
 
-MediaOps is a self-hosted control room for Plex and the tools around it: Seerr, Radarr, Sonarr, SABnzbd, and Tautulli.
+MediaOps is a self-hosted operations view for Plex and the common tools around it. Seerr, Radarr, Sonarr, SABnzbd, and Tautulli.
 
-It is for the person running the server. It helps answer the practical questions quickly: who is streaming, who requested what, which accounts look shared, what is downloading, and which media is taking space without being watched.
+It is developed for the admin the person running the server. It helps answer key questions in one tool: who is streaming, who requested what, which accounts look shared, what is downloading, and which media is taking space without being watched.
 
-MediaOps is in initial beta. It is useful today, but it is still an admin tool with sharp edges, especially around delete and unmonitor actions.
+MediaOps is an initial beta. It is useful in beta, but it will still have bugs, take caution with some features, especially around delete and unmonitor actions.
 
 ## What It Does
 
-**Live operations:** See active Plex streams with user, title, player, device, IP address, public reach, bandwidth, transcode decision, and download activity. Admins can terminate a stream or create a user-bound IP/device ban from the live session.
+**Live operations:** See active Plex streams with user, title, player, device, IP address, public reach, bandwidth, transcode decision, and download activity. An admin can terminate a stream or create a user-bound IP/device ban from the live session.
 
 **Users and moderation:** Open a user profile to see watch history, graphs, devices, IP addresses, requests, watchlist items, Seerr permissions, quotas, streaming policy, and bans. Policies can cap concurrent streams, public IP count, and device count. Bans can target one user's IP or one Plex client/device, with a custom message.
 
-**Requests and downloads:** Combine Seerr requests with Radarr/Sonarr data. See requester, status, expected release, release ETA, fulfilled size, queue progress, and available actions. Approve, decline, search, unmonitor, delete files through Arr, or delete only the request record.
+**Requests and downloads:** Combine data from Seerr requests with Radarr/Sonarr data. See requester, status, expected release, release ETA, fulfilled size, queue progress, and available actions. Approve, decline, search, unmonitor, delete files through Arr, or delete only the request record.
 
 **Libraries and storage:** Pull Radarr/Sonarr inventory, enrich it with watch history, and find large, stale, or unwatched media. Selecting a movie or show opens a focused detail view with storage, monitoring state, watchers, recent plays, and Arr actions.
 
-**History and graphs:** Store completed Plex sessions in PostgreSQL, optionally pull old Tautulli history through its API, and graph usage by period, user, title, playback decision, platform, hour, weekday, bandwidth, and request behavior.
+**History and graphs:** Store completed Plex sessions in PostgreSQL, optionally pull historical data by connecting Tautulli history through its API, and graph usage by period, user, title, playback decision, platform, hour, weekday, bandwidth, and request behavior.
 
 ## How It Works
 
-Plex and PostgreSQL are the core. MediaOps polls Plex for live sessions, turns stopped sessions into history rows, and stores app state in PostgreSQL. Plex sign-in is used for normal auth, and local auth is kept as the admin recovery path.
+Plex and PostgreSQL are the core. MediaOps polls Plex for live sessions, turns stopped sessions into history rows, and stores app state in PostgreSQL. Plex sign-in is used for normal auth, and local auth is kept as an admin recovery path.
 
 Optional integrations add more context:
 
@@ -78,7 +78,7 @@ Open `http://localhost:8000`, then:
 3. Choose the Plex server.
 4. Connect optional services in Settings.
 
-If you are behind a reverse proxy, set `BASE_URL` to the final public URL before using Plex sign-in:
+If you are behind a reverse proxy (I recommend Traefik or similar for TLS termination with the media-stack in its own docker network), set `BASE_URL` to the final public URL before using Plex sign-in:
 
 ```env
 BASE_URL=https://mediaops.example.com
