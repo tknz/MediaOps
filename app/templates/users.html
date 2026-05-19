@@ -1,0 +1,17 @@
+{% from '_weekly_chart.html' import weekly_hours %}
+{% extends 'base.html' %}
+{% block content %}
+<section class="cinema-hero users-hero">
+  <div><p class="eyebrow">Plex account directory</p><h1>Plex users</h1><p class="muted">Plex users, access, watch history, bandwidth and devices.</p></div>
+</section>
+{{ weekly_hours(weekly_chart) }}
+<section class="panel"><table class="users-table"><thead><tr><th>User</th><th>Email</th><th>Share</th><th>Role</th><th>Hours</th><th>Sessions</th><th>Traffic</th><th>Players</th><th>Last watch</th></tr></thead><tbody>
+{% for r in rows %}{% set p = r.profile %}{% set u = r.usage %}<tr>
+  <td><a class="user-cell" href="/users/{{ r.username|urlencode }}">{% if p and p.thumb_url %}<img src="{{ p.thumb_url }}" alt="">{% else %}<span class="mini-avatar">{{ r.username[:1]|upper }}</span>{% endif %}<span><b>{{ p.display_name or p.friendly_name or r.username if p else r.username }}</b><small>{{ r.username }}{% if p and p.is_home %} · home{% endif %}{% if p and p.is_restricted %} · restricted{% endif %}</small></span></a></td>
+  <td>{{ p.email if p and p.email else '—' }}</td>
+  <td>{% if p %}{% if p.shared_pending %}Pending{% elif p.shared_num_libraries is not none %}{{ p.shared_num_libraries }} libraries{% elif p.shared_all_libraries %}All libraries{% else %}—{% endif %}{% else %}history only{% endif %}</td>
+  <td>{% if p %}<form class="inline-admin-form" method="post" action="/users/{{ r.username|urlencode }}/admin"><input type="hidden" name="is_admin" value="{{ '' if p.is_admin else '1' }}"><button class="mini {{ 'admin-pill' if p.is_admin else '' }}" type="submit">{{ 'Remove admin' if p.is_admin else 'Make admin' }}</button></form>{% else %}<span class="muted">history only</span>{% endif %}</td>
+  <td>{{ '%.1f'|format((u.seconds if u else 0)/3600) }}</td><td>{{ u.sessions if u else 0 }}</td><td>{{ '%.2f'|format((u.bytes if u else 0)/1000000000000) }} TB</td><td>{{ u.players if u else 0 }}</td><td>{% if u and u.last_seen %}{{ u.last_seen.strftime('%Y-%m-%d') }}{% elif p and p.shared_last_seen_at %}{{ p.shared_last_seen_at.strftime('%Y-%m-%d') }}{% else %}—{% endif %}</td>
+</tr>{% endfor %}
+</tbody></table></section>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="setup-shell">
+  <div class="setup-copy"><p class="eyebrow">Plex sign-in</p><h1>Waiting for Plex</h1><p class="muted">Once Plex approves the login, MediaOps will automatically continue to server selection.</p></div>
+  <article class="setup-card primary-setup-card">
+    <div class="setup-step"><span>1</span><div><h2>Complete Plex sign-in</h2><p class="muted">If the Plex window is closed or missing, open it again.</p></div></div>
+    {% if plex_auth_url %}<button class="button" id="plexSignin" data-url="{{ plex_auth_url }}">Open Plex sign-in</button>{% endif %}
+    <div class="setup-step"><span>2</span><div><h2>Checking automatically</h2><p class="muted">This page polls Plex directly and moves on as soon as the token arrives.</p></div></div>
+    <p class="muted pulse-note" id="plexStatus">Checking for token…</p><form method="post" action="/setup/reset-plex"><button class="mini link-mini" type="submit">Start with a fresh Plex pin</button></form>
+  </article>
+</section>
+{% if plex_auth_url %}
+<script>
+(function(){
+  const btn = document.getElementById('plexSignin');
+  const status = document.getElementById('plexStatus');
+  let popup = null;
+  function setStatus(text){ if(status) status.textContent = text; }
+  function openPlex(){ popup = window.open(btn.dataset.url, 'mediaops-plex-auth', 'popup=yes,width=720,height=760'); setStatus('Plex sign-in is open. Waiting for approval…'); }
+  async function poll(){
+    try{
+      const r = await fetch('/auth/status', {cache:'no-store'});
+      const j = await r.json();
+      if(j.status === 'connected' || j.status === 'server_select'){
+        try { if(popup && !popup.closed) popup.close(); } catch(e) {}
+        setStatus('Plex connected. Loading server setup…');
+        window.location.href = j.redirect || '/setup/services';
+        return;
+      }
+      if(j.status === 'expired' || j.status === 'missing'){
+        setStatus('That Plex sign-in expired. Starting a fresh PIN…');
+        await fetch('/setup/reset-plex', {method:'POST'});
+        window.location.href = j.redirect || '/setup';
+        return;
+      }
+      setStatus('Checking for token…');
+    } catch(e){ setStatus('Still checking Plex…'); }
+    setTimeout(poll, 2000);
+  }
+  btn && btn.addEventListener('click', openPlex);
+  poll();
+})();
+</script>
+{% endif %}
+{% endblock %}

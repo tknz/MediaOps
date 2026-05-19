@@ -1,0 +1,70 @@
+{% set action = form_action or '/settings' %}
+{% set return_to = return_to or '/settings' %}
+{% set source_map = sources or {} %}
+{% set radarr_list = services.radarr if services and services.radarr else [{'name':'Radarr','url':values.radarr_url,'api_key':values.radarr_api_key}] %}
+{% set sonarr_list = services.sonarr if services and services.sonarr else [{'name':'Sonarr','url':values.sonarr_url,'api_key':values.sonarr_api_key}] %}
+{% macro source_badge(name) -%}
+  {% set source = source_map.get(name, 'default') %}
+  <small class="setting-source source-{{ source }}">{{ 'Set by environment variable' if source == 'env' else ('Saved in config' if source == 'config' else 'Default') }}</small>
+{%- endmacro %}
+{% macro test_status(kind) -%}
+  {% if test and test.kind == kind and test.message %}
+    <span class="inline-test-status {{ 'ok' if test.ok == '1' else 'bad' }}">{{ '✓' if test.ok == '1' else '!' }} {{ test.message }}</span>
+  {% endif %}
+{%- endmacro %}
+{% macro setting_input(name, value, placeholder='', source_name='', secret=false) -%}
+  {% set key = source_name or name %}
+  {% if secret %}
+  <span class="secret-field">
+    <input class="secret-input" type="password" name="{{ name }}" value="{{ value or '' }}" placeholder="{{ placeholder }}" autocomplete="off" spellcheck="false" {% if source_map.get(key) == 'env' %}readonly data-source="env"{% endif %}>
+    <button class="secret-toggle" type="button" aria-label="Show hidden value" title="Show hidden value"><span aria-hidden="true">&#128065;</span></button>
+  </span>
+  {% else %}
+  <input name="{{ name }}" value="{{ value or '' }}" placeholder="{{ placeholder }}" {% if source_map.get(key) == 'env' %}readonly data-source="env"{% endif %}>
+  {% endif %}
+  {{ source_badge(key) }}
+{%- endmacro %}
+{% if import_result and import_result.message %}<section class="panel test-result {{ 'ok' if import_result.ok == '1' else 'bad' }}"><b>Tautulli import:</b> {{ import_result.message }}</section>{% endif %}
+<form class="settings wizard-settings" method="post" action="{{ action }}">
+  <input type="hidden" name="return_to" value="{{ return_to }}" data-return-to-base="{{ return_to }}">
+  {% if setup_token %}<input type="hidden" name="setup_token" value="{{ setup_token }}">{% endif %}
+  <nav class="settings-tabbar" aria-label="Settings sections">
+    <button type="button" class="active" data-settings-tab="plex"><b>Plex</b><small>Server and reconnect</small></button>
+    <button type="button" data-settings-tab="apps"><b>Apps</b><small>Seerr, Tautulli, SABnzbd</small></button>
+    <button type="button" data-settings-tab="arr"><b>Radarr/Sonarr</b><small>Movie and TV instances</small></button>
+    <button type="button" data-settings-tab="jobs"><b>Jobs</b><small>Polling and sync intervals</small></button>
+    <button type="button" data-settings-tab="auth"><b>Auth</b><small>Local admin sign-in</small></button>
+  </nav>
+
+  <div class="settings-tab-panel active" data-settings-panel="plex">
+  <section class="service-grid service-grid-single">
+    <article class="service-tile connected"><div><p class="eyebrow">Plex</p><h2>Plex server</h2><p class="muted">Authenticated with Plex. Reconnect if you need a fresh token or different server.</p></div><input type="hidden" name="media_server_type" value="{{ values.media_server_type or 'plex' }}"><label>Server name{{ setting_input('plex_server_name', values.plex_server_name) }}</label><label>Server URL{{ setting_input('plex_server_url', values.plex_server_url) }}</label><input type="hidden" name="plex_server_token" value="{{ values.plex_server_token }}"><input type="hidden" name="plex_owner_id" value="{{ values.plex_owner_id }}"><input type="hidden" name="plex_machine_id" value="{{ values.plex_machine_id }}"><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-service" name="service_kind" value="plex">Test</button>{{ test_status('plex') }}<a class="mini link-mini" target="_blank" rel="noopener" href="/settings/reconnect-plex">Reconnect Plex</a><a class="mini link-mini" href="/auth/complete">Finish reconnect</a></div></article>
+  </section>
+  </div>
+
+  <div class="settings-tab-panel" data-settings-panel="apps">
+  <section class="service-grid">
+    <article class="service-tile"><div><p class="eyebrow">Tautulli</p><h2>Import Tautulli history</h2><p class="muted">Save a working Tautulli URL and API key once. MediaOps starts the history import and bandwidth backfill, then keeps new history current from Plex live polling.</p></div><label>URL{{ setting_input('tautulli_url', values.tautulli_url, 'https://tautulli.example.com') }}</label><label>API key{{ setting_input('tautulli_api_key', values.tautulli_api_key, '', '', true) }}</label><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-service" name="service_kind" value="tautulli">Test Tautulli</button>{{ test_status('tautulli') }}<button class="mini" type="submit" formaction="/settings/import-tautulli" name="import_mode" value="new">Sync new history</button><button class="mini" type="submit" formaction="/settings/import-tautulli" name="import_mode" value="full">Full history rescan</button><button class="mini" type="submit" formaction="/settings/enrich-tautulli-bandwidth">Backfill bandwidth</button></div></article>
+
+    <article class="service-tile"><div><p class="eyebrow">SABnzbd</p><h2>Connect SABnzbd</h2><p class="muted">Queue visibility and download health.</p></div><label>URL{{ setting_input('sabnzbd_url', values.sabnzbd_url, 'https://sabnzbd.example.com') }}</label><label>API key{{ setting_input('sabnzbd_api_key', values.sabnzbd_api_key, '', '', true) }}</label><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-service" name="service_kind" value="sabnzbd">Test SABnzbd</button>{{ test_status('sabnzbd') }}</div></article>
+
+    <article class="service-tile"><div><p class="eyebrow">Seerr</p><h2>Connect Seerr</h2><p class="muted">Requests, approvals, permissions and request history.</p></div><label>URL{{ setting_input('seerr_url', values.seerr_url, 'https://requests.example.com') }}</label><label>API key{{ setting_input('seerr_api_key', values.seerr_api_key, '', '', true) }}</label><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-service" name="service_kind" value="seerr">Test Seerr</button>{{ test_status('seerr') }}</div></article>
+  </section>
+  </div>
+
+  <div class="settings-tab-panel" data-settings-panel="arr">
+  <section class="panel"><div class="section-head"><div><p class="eyebrow">Radarr</p><h2>Radarr instances</h2><p class="muted">Add more if you split 4K, anime, or separate libraries. First instance is used as the primary for now.</p></div></div><div class="instance-list">{% for r in radarr_list + [{'name':'','url':'','api_key':''}] %}<fieldset class="instance-row"><legend>{{ r.name or 'Connect another Radarr' }}</legend><label>Name{{ setting_input('radarr_name', r.name, 'Radarr', 'radarr_instances') }}</label><label>URL{{ setting_input('radarr_url_multi', r.url, '', 'radarr_instances' if source_map.get('radarr_instances') == 'env' else ('radarr_url' if loop.index0 == 0 else '')) }}</label><label>API key{{ setting_input('radarr_api_key_multi', r.api_key, '', 'radarr_instances' if source_map.get('radarr_instances') == 'env' else ('radarr_api_key' if loop.index0 == 0 else ''), true) }}</label><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-service" name="service_kind" value="radarr:{{ loop.index0 }}">Test</button>{{ test_status('radarr:' ~ loop.index0) }}</div></fieldset>{% endfor %}</div></section>
+
+  <section class="panel"><div class="section-head"><div><p class="eyebrow">Sonarr</p><h2>Sonarr instances</h2><p class="muted">Same pattern as Radarr. First instance is the primary until multi-instance routing is wired in.</p></div></div><div class="instance-list">{% for r in sonarr_list + [{'name':'','url':'','api_key':''}] %}<fieldset class="instance-row"><legend>{{ r.name or 'Connect another Sonarr' }}</legend><label>Name{{ setting_input('sonarr_name', r.name, 'Sonarr', 'sonarr_instances') }}</label><label>URL{{ setting_input('sonarr_url_multi', r.url, '', 'sonarr_instances' if source_map.get('sonarr_instances') == 'env' else ('sonarr_url' if loop.index0 == 0 else '')) }}</label><label>API key{{ setting_input('sonarr_api_key_multi', r.api_key, '', 'sonarr_instances' if source_map.get('sonarr_instances') == 'env' else ('sonarr_api_key' if loop.index0 == 0 else ''), true) }}</label><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-service" name="service_kind" value="sonarr:{{ loop.index0 }}">Test</button>{{ test_status('sonarr:' ~ loop.index0) }}</div></fieldset>{% endfor %}</div></section>
+  </div>
+
+  <div class="settings-tab-panel" data-settings-panel="jobs">
+  <section class="panel"><div class="section-head"><div><p class="eyebrow">Scheduled jobs</p><h2>Background refresh</h2><p class="muted">Regular work MediaOps runs itself. Tautulli history import runs when Tautulli is first connected; live history comes from Plex after that.</p></div></div><div class="job-grid">{% for job in jobs %}<label class="job-card"><span><b>{{ job.label }}</b><small>{{ job.description }}</small>{% if job.next_run %}<small>Next: {{ job.next_run.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}</span><input name="{{ job.setting }}" value="{{ job.value }}"><em>{{ job.unit }}</em></label>{% endfor %}</div></section>
+  </div>
+
+  <div class="settings-tab-panel" data-settings-panel="auth">
+  <section class="panel auth-settings-panel"><div class="section-head"><div><p class="eyebrow">Authentication</p><h2>Local auth</h2><p class="muted">Admin username and password sign-in. Passwords are stored as PBKDF2 hashes.</p></div><span class="status-pill">{{ 'Configured' if local_auth_configured else 'Not configured' }}</span></div><div class="auth-form-grid"><label>Username{{ setting_input('local_auth_username', values.local_auth_username or 'admin', 'admin') }}</label><label>New password<input name="local_auth_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password"></label><label>Confirm password<input name="local_auth_password_confirm" type="password" autocomplete="new-password"></label></div>{% if sources.get('local_auth_password_hash') == 'env' %}<p class="muted">Password hash is set by environment, so password changes here are ignored.</p>{% endif %}</section>
+  </div>
+
+  <div class="settings-savebar"><button class="button" type="submit">Save configuration</button></div>
+</form>

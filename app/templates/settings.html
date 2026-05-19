@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="graphs-hero settings-hero"><div><p class="eyebrow">Configuration</p><h1>Settings</h1><p class="muted">Choose a section, edit it, save once.</p></div></section>
+{% set form_action = '/settings' %}{% set return_to = '/settings' %}{% include 'settings_form.html' %}
+<script src="/static/settings-tabs.js?v=20260519-ui3" defer></script>
+{% endblock %}

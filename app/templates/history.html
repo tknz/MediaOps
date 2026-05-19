@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="graphs-hero compact-history-hero">
+  <div><p class="eyebrow">{{ media_server_label() }}</p><h1>History</h1></div>
+</section>
+<section class="stats history-stats">
+  <article><p class="eyebrow">Sessions</p><b>{{ history_stats.sessions }}</b></article>
+  <article><p class="eyebrow">Watched</p><b>{{ '%.1f'|format(history_stats.hours) }}h</b></article>
+  <article><p class="eyebrow">Transferred</p><b>{{ '%.2f'|format(history_stats.tb) }} TB</b></article>
+  <article><p class="eyebrow">Transcodes</p><b>{{ history_stats.transcodes }}</b></article>
+</section>
+<form class="filters history-filters" method="get">
+  <label>Range <select name="days"><option value="30" {% if selected_days == '30' %}selected{% endif %}>30 days</option><option value="90" {% if selected_days == '90' %}selected{% endif %}>90 days</option><option value="365" {% if selected_days == '365' %}selected{% endif %}>12 months</option><option value="all" {% if selected_days == 'all' %}selected{% endif %}>All time</option></select></label>
+  <label>User <select name="selected_user"><option value="">All users</option>{% for name in users %}<option value="{{ name }}" {% if selected_user == name %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></label>
+  <label>Type <select name="media_type"><option value="">All media</option>{% for t in media_types %}<option value="{{ t }}" {% if media_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+  <label>Playback <select name="decision"><option value="">All decisions</option>{% for d in decisions %}<option value="{{ d }}" {% if decision == d %}selected{% endif %}>{{ d }}</option>{% endfor %}</select></label>
+  <button type="submit">Filter</button><a class="mini link-mini" href="/history">Reset</a>
+</form>
+<section class="panel history-panel">
+  <div class="section-head"><div><p class="eyebrow">Rows</p><h2>Watch history</h2></div><span class="muted">{{ rows|length }} shown</span></div>
+  {% if rows %}
+  <table class="history-table"><thead><tr><th></th><th>When</th><th>User</th><th>Title</th><th>Type</th><th>Watched</th><th>Reach</th><th>IP</th><th>Decision</th><th>Player</th></tr></thead><tbody>{% for r in rows %}<tr><td>{% if r.cached_thumb %}<img class="thumb" src="/cached-art/{{ r.cached_thumb }}">{% else %}<span class="thumb placeholder-thumb">{{ (r.media_type or '?')[:1]|upper }}</span>{% endif %}</td><td><b>{{ r.started_at.strftime('%Y-%m-%d') }}</b><small>{{ r.started_at.strftime('%H:%M') }}</small></td><td>{{ r.username }}</td><td class="title-cell">{{ r.title or 'Unknown title' }}</td><td>{{ r.media_type or '—' }}</td><td>{{ (r.watched_seconds/60)|round|int }} min</td><td>{{ r.reach or '—' }}</td><td>{{ r.ip_address or '—' }}</td><td><span class="decision-pill {{ 'danger-pill' if r.transcode_decision == 'transcode' else '' }}">{{ r.transcode_decision or '—' }}</span></td><td>{{ r.player or '—' }}</td></tr>{% endfor %}</tbody></table>
+  {% else %}
+  <div class="empty-state"><h2>No history found</h2><p class="muted">Clear the filters or import Tautulli history.</p><a class="button" href="/settings">Settings</a></div>
+  {% endif %}
+</section>
+{% endblock %}

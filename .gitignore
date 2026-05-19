@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+config/
+config-wizard/
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+art-cache/
+*.db

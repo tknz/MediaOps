@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Plex sign in complete</title></head>
+<body style="font-family:system-ui;background:#080d14;color:#e8f1fb;display:grid;place-items:center;min-height:100vh;margin:0">
+  <main style="text-align:center"><h1>Signed in.</h1><p>You can close this window.</p></main>
+  <script>
+    (function(){
+      const target = {{ redirect|tojson }};
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.location.href = target;
+          window.close();
+          return;
+        }
+      } catch(e) {}
+      window.location.href = target;
+    })();
+  </script>
+</body></html>

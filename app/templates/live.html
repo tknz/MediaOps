@@ -1,0 +1,80 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="live-head">
+  <h1>Live now</h1>
+  <aside class="bandwidth-card" aria-label="Current bandwidth">
+    <div>
+      <p class="eyebrow">Current bandwidth</p>
+      <strong>{{ '%.1f'|format(live_stats.total_mbps) }} Mb/s</strong>
+      <span>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
+    </div>
+    <div class="bandwidth-graph" aria-hidden="true">
+      {% for h in live_stats.bars %}<i style="height:{{ h }}%; animation-delay:-{{ loop.index0 * 0.19 }}s"></i>{% endfor %}
+    </div>
+  </aside>
+</div>
+<div class="live-grid">
+{% for s in sessions %}
+<article class="stream-card">
+  <div class="art"{% if s.thumb %} style="background-image:url('/plex-image?path={{ s.thumb|urlencode }}')"{% endif %}></div>
+  <div class="stream-body">
+    <p class="eyebrow">{{ s.user }} · {{ s.state }}</p>
+    <h2>{% if s.grandparent_title %}{{ s.grandparent_title }}{% else %}{{ s.title }}{% endif %}</h2>
+    {% if s.grandparent_title %}<p class="subhead">{{ s.parent_title }} · {{ s.title }}</p>{% endif %}
+    <div class="progress"><span style="width:{% if s.duration %}{{ ((s.view_offset / s.duration) * 100)|round|int }}{% else %}0{% endif %}%"></span></div>
+    <ul class="facts">
+      <li><b>Client:</b> {{ s.product }} on {{ s.device }}</li>
+      <li><b>Device ID:</b> {{ s.machine_identifier or '—' }}</li>
+      <li><b>Reach:</b> {% if s.local == '1' and s.secure == '1' and s.relayed == '0' %}Local{% else %}Remote{% endif %}</li>
+      {% if s.local == '1' and s.secure == '1' and s.relayed == '0' %}<li><b>LAN IP:</b> {{ s.player_address or '—' }}</li>{% endif %}
+      <li><b>Public IP:</b> {{ s.remote_public_address or '—' }}</li>
+      <li><b>PTR:</b> {{ s.ptr or '—' }}</li>
+      <li><b>ISP:</b> {{ s.isp or s.org or 'Private network' }}</li>
+      <li><b>Bandwidth:</b> {% if s.state == 'paused' %}Paused — not counted{% else %}{{ s.bandwidth }} kbps{% endif %}</li>
+      <li><b>Decision:</b> {{ s.part_decision }} / {{ s.transcode_decision }}</li>
+      <li><b>Media:</b> {{ s.resolution }} {{ s.video_codec }} · {{ s.container }}</li>
+    </ul>
+    {% if user.is_admin %}
+    <div class="stream-actions calm-actions">
+      {% if s.session_id %}<form method="post" action="/live/terminate"><input type="hidden" name="session_id" value="{{ s.session_id }}"><input name="reason" placeholder="Message if stopping"><button class="stop-button" type="submit">Stop</button></form>{% endif %}
+      <details class="moderation-menu"><summary>Ban options for {{ s.user }}</summary><div>
+        {% if s.remote_public_address %}<form method="post" action="/users/{{ s.user|urlencode }}/blocks"><input type="hidden" name="block_type" value="ip"><input type="hidden" name="value" value="{{ s.remote_public_address }}"><input type="hidden" name="label" value="{{ s.isp or s.org or s.ptr or s.remote_public_address }}"><input type="hidden" name="message" value="The IP address you are connecting from is banned. Please contact your server administrator."><input type="hidden" name="return_to" value="/users/{{ s.user|urlencode }}?tab=bans"><button class="quiet-warn" type="submit">Ban this IP for {{ s.user }}</button></form>{% endif %}
+        {% if s.machine_identifier %}<form method="post" action="/users/{{ s.user|urlencode }}/blocks"><input type="hidden" name="block_type" value="device"><input type="hidden" name="value" value="{{ s.machine_identifier }}"><input type="hidden" name="label" value="{{ s.product or s.player or s.device or s.machine_identifier }}"><input type="hidden" name="message" value="The device you are connecting from is banned. Please contact your server administrator."><input type="hidden" name="return_to" value="/users/{{ s.user|urlencode }}?tab=bans"><button class="quiet-warn" type="submit">Ban this device</button></form>{% endif %}
+        <a class="quiet-link" href="/users/{{ s.user|urlencode }}?tab=bans">Open {{ s.user }} bans</a>
+      </div></details>
+    </div>
+    {% endif %}
+    <details><summary>More</summary><dl>
+      <dt>Library</dt><dd>{{ s.library }}</dd>
+      <dt>Client</dt><dd>{{ s.product }} {{ s.version }} · {{ s.platform }} {{ s.platform_version }}</dd>
+      <dt>Local IP</dt><dd>{{ s.player_address or '—' }}</dd>
+      <dt>Public IP</dt><dd>{{ s.remote_public_address or '—' }}</dd>
+      <dt>Security</dt><dd>local={{ s.local }} secure={{ s.secure }} relayed={{ s.relayed }}</dd>
+      <dt>Audio</dt><dd>{{ s.audio_stream_title }}</dd>
+      <dt>File</dt><dd>{{ s.file }}</dd>
+      <dt>Size</dt><dd>{% if s.file_size %}{{ '%.2f'|format(s.file_size/1000000000) }} GB{% else %}—{% endif %}</dd>
+      <dt>Session</dt><dd>{{ s.session_key }} / {{ s.session_id }}</dd>
+    </dl></details>
+  </div>
+</article>
+{% else %}
+<p>Nothing playing right now.</p>
+{% endfor %}
+</div>
+
+<section class="panel ops-panel">
+  <div class="section-head"><div><p class="eyebrow">Operations</p><h2>Downloads and processing</h2></div><span class="muted">{{ ops_stats.remaining_label }} remaining</span></div>
+  <div class="ops-grid">
+  {% for q in downloads %}
+    <article class="ops-card">
+      <div><p class="eyebrow">{{ q.source }} · {{ q.status }}</p><h3>{{ q.title }}</h3>{% if q.message %}<small>{{ q.message }}</small>{% endif %}</div>
+      <div class="progress"><span style="width:{% if q.progress is not none %}{{ q.progress }}{% else %}0{% endif %}%"></span></div>
+      <p class="ops-meta">{{ q.quality or '—' }} · {{ q.indexer or '—' }} · {{ q.timeleft or '—' }}{% if q.size_gb %} · {{ q.size_gb }} GB{% endif %}</p>
+    </article>
+  {% else %}
+    <p class="muted">No active downloads or processing jobs.</p>
+  {% endfor %}
+  </div>
+</section>
+
+{% endblock %}

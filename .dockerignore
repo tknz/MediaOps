@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+config
+config-wizard
+imports
+__pycache__
+*.pyc
+.DS_Store
+screenshots
+docs/screenshots

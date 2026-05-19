@@ -1,0 +1,42 @@
+services:
+  app-wizard:
+    image: mediaops-app
+    build: .
+    container_name: mediaops-wizard-local
+    environment:
+      APP_NAME: MediaOps Wizard Test
+      BASE_URL: http://localhost:8001
+      SECRET_KEY: wizard-local-only-9f3d8e3c2f5a4b7a9d1e6c8f0a2b4c6d
+      CONFIG_FILE: /config/config.env
+      DATABASE_URL: postgresql+psycopg://mediaops:mediaops@db-wizard:5432/mediaops
+      PLEX_CLIENT_ID: mediaops-wizard-local
+      PLEX_PRODUCT: MediaOps
+      IMPORT_TAUTULLI_DB: ""
+      IMPORT_SEERR_DB: ""
+      IMPORT_RADARR_DB: ""
+      IMPORT_SONARR_DB: ""
+    depends_on:
+      db-wizard:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./config-wizard:/config
+      - ./config-wizard/art-cache:/config/art-cache
+  db-wizard:
+    image: postgres:16-alpine
+    container_name: mediaops-db-wizard-local
+    environment:
+      POSTGRES_DB: mediaops
+      POSTGRES_USER: mediaops
+      POSTGRES_PASSWORD: mediaops
+    volumes:
+      - mediaops_wizard_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediaops -d mediaops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  mediaops_wizard_pg:

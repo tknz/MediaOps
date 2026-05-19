@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="graphs-hero">
+  <div><p class="eyebrow">Setup wizard</p><h1>Select Plex server</h1><p class="muted">Only servers owned by this Plex account are shown. MediaOps prefers the local connection when Plex exposes one.</p></div>
+</section>
+<div class="service-grid server-select-grid">
+  {% for s in servers %}
+  <article class="service-tile server-tile">
+    <div class="tile-headline"><p class="eyebrow good">✓ Owned server</p><span class="status-pill">{{ 'Local preferred' if s.connections and s.connections[0].local else 'Remote connection' }}</span></div>
+    <h2>{{ s.name }}</h2>
+    <p class="muted">{{ s.platform }}{% if s.productVersion %} · {{ s.productVersion }}{% endif %}</p>
+    <form method="post" action="/setup/plex-server">
+      <input type="hidden" name="machine_id" value="{{ s.clientIdentifier }}">
+      <input type="hidden" name="server_name" value="{{ s.name }}">
+      <label>Connection
+        <select name="uri">
+          {% for c in s.connections %}
+          <option value="{{ c.uri }}" {% if c.uri == s.uri or loop.first %}selected{% endif %}>{{ '✓ ' if loop.first else '' }}{{ c.uri }}{% if c.local %} · local{% else %} · remote{% endif %}{% if c.protocol %} · {{ c.protocol }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="button" type="submit">Use this server</button>
+    </form>
+  </article>
+  {% endfor %}
+  <article class="service-tile server-tile custom-server-tile">
+    <div class="tile-headline"><p class="eyebrow">Custom</p><span class="status-pill">Manual URL</span></div>
+    <h2>Use a custom Plex address</h2>
+    <p class="muted">Useful when Docker needs a Traefik or LAN URL that Plex did not return.</p>
+    <form method="post" action="/setup/plex-server">
+      <label>Owned server
+        <select name="machine_id">
+          {% for s in servers %}<option value="{{ s.clientIdentifier }}">{{ s.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Custom URL
+        <input name="uri" placeholder="https://plex.example.com or http://192.168.x.x:32400" required>
+      </label>
+      <button class="button secondary" type="submit">Use custom URL</button>
+    </form>
+  </article>
+</div>
+{% endblock %}

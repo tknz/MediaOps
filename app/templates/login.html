@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="hero login-hero" data-auth="plex">
+  <p class="eyebrow">MediaOps</p>
+  {% if configured %}
+    <h1>Sign in</h1>
+    <p class="muted">Use Plex or local auth.</p>
+    <div class="login-methods">
+      <div class="plex-login-row">
+        {% if plex_auth_url %}<button class="button" id="plexSignin" data-url="{{ plex_auth_url }}">Sign in with Plex</button>{% else %}<a class="button" href="/auth/start">Try again</a>{% endif %}
+        <p class="muted pulse-note" id="plexStatus"></p>
+      </div>
+    {% if local_auth_configured %}
+      <form class="local-auth-panel" method="post" action="/auth/local">
+        <p class="eyebrow">Local auth</p>
+        {% if local_error %}<p class="muted">Local auth failed.</p>{% endif %}
+        <div class="form-grid">
+          <label>Username<input name="username" value="{{ local_auth_username or '' }}" autocomplete="username"></label>
+          <label>Password<input name="password" type="password" autocomplete="current-password"></label>
+        </div>
+        <button class="mini" type="submit">Sign in</button>
+      </form>
+    {% endif %}
+    </div>
+  {% else %}
+    <h1>Set up MediaOps</h1>
+    <p>Connect Plex and choose the server.</p>
+    <a class="button" href="/setup">Start setup</a>
+  {% endif %}
+</section>
+{% if configured and plex_auth_url %}
+<script>
+(function(){
+  const btn = document.getElementById('plexSignin');
+  const status = document.getElementById('plexStatus');
+  let popup = null;
+  function setStatus(text){ if(status) status.textContent = text; }
+  function openPlex(){
+    popup = window.open(btn.dataset.url, 'mediaops-plex-auth', 'popup=yes,width=720,height=760');
+    setStatus('Waiting for Plex sign in…');
+  }
+  async function poll(){
+    try{
+      const r = await fetch('/auth/status', {cache:'no-store'});
+      const j = await r.json();
+      if(j.status === 'signed_in' || j.status === 'server_select'){
+        try { if(popup && !popup.closed) popup.close(); } catch(e) {}
+        window.location.href = j.redirect || '/';
+        return;
+      }
+      if(j.status === 'expired' || j.status === 'missing'){
+        window.location.href = j.redirect || '/';
+        return;
+      }
+    } catch(e) {}
+    setTimeout(poll, 1500);
+  }
+  btn && btn.addEventListener('click', openPlex);
+  poll();
+})();
+</script>
+{% endif %}
+{% endblock %}

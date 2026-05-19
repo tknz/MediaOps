@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Your year in media</h1>
+<div class="stats"><article><b>{{ '%.1f'|format(hours) }}</b><span>hours watched</span></article><article><b>{{ sessions }}</b><span>sessions</span></article><article><b>{{ '%.2f'|format(terabytes) }} TB</b><span>streamed</span></article><article><b>{{ transcodes }}</b><span>transcodes</span></article></div>
+<h2>Recent requests</h2>
+<table><thead><tr><th>Date</th><th>Title</th><th>Type</th><th>Size</th></tr></thead><tbody>{% for r in requests %}<tr><td>{{ r.requested_at.date() }}</td><td>{{ r.title }}</td><td>{{ r.request_type }}</td><td>{% if r.fulfilled_bytes %}{{ '%.1f'|format(r.fulfilled_bytes/1000000000) }} GB{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

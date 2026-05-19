@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or 'MediaOps' }}</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260519-ui3">
+  {% if user and user.is_admin %}<script src="/static/request-notifier.js" defer></script>{% endif %}
+</head>
+<body>
+<header><a href="/">MediaOps</a>{% if user %}<span class="server-pill">{{ media_server_label() }}</span><nav><a href="/admin">Overview</a><a href="/users">Users</a><a href="/live">Live</a><a href="/graphs">Graphs</a><a href="/requests">Requests</a><a href="/history">History</a><a href="/libraries">Libraries</a><a href="/settings">Settings</a></nav><a class="now-chip" id="nowChip" href="/live" aria-label="Open live streams"><b>Now</b><span>Loading…</span></a>{% if user.is_admin %}<div id="requestNotifier" class="request-notifier" aria-live="polite"></div>{% endif %}<span>{{ user.username }}</span><form class="inline-form" method="post" action="/logout"><button class="link-button" type="submit">Sign out</button></form>{% endif %}</header>
+<main>{% block content %}{% endblock %}</main>
+{% if user %}<script>
+(function(){
+  const chip=document.getElementById('nowChip'); if(!chip) return;
+  const esc=s=>String(s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  let lastSignature=null;
+  let timer=null;
+  let inFlight=null;
+  const visibleLimit=()=>window.matchMedia('(min-width: 1500px)').matches ? 4 : 3;
+  const signature=(sessions,downloads)=>sessions.map(s=>['s',s.session_key,s.user,s.title,s.state,s.thumb].join('|')).concat(downloads.map(d=>['d',d.item_key,d.source,d.title,d.status,d.progress].join('|'))).join('~');
+  function render(sessions,downloads){
+    const nextSignature=signature(sessions,downloads);
+    if(nextSignature===lastSignature) return;
+    lastSignature=nextSignature;
+    if(!sessions.length && !downloads.length){ chip.classList.add('idle'); chip.innerHTML='<b>Now</b><span>Idle</span>'; return; }
+    chip.classList.remove('idle');
+    const limit=visibleLimit();
+    const ops=downloads.map(d=>({kind:'download',...d}));
+    const items=sessions.map(s=>({kind:'stream',...s})).concat(ops);
+    const shown=items.slice(0,limit);
+    chip.innerHTML='<b>Now</b>'+shown.map(item=>{
+      if(item.kind==='download'){
+        const progress=item.progress==null?'':` ${Math.round(Number(item.progress))}%`;
+        return `<span class="now-person now-download"><i></i><em><strong>${esc(item.source)}</strong><small>${esc(item.title)}${esc(progress)}</small></em></span>`;
+      }
+      return `<span class="now-person">${item.thumb ? `<img src="/plex-image?path=${encodeURIComponent(item.thumb)}" alt="">` : '<i></i>'}<em><strong>${esc(item.user)}</strong><small>${esc(item.title)}</small></em></span>`;
+    }).join('')+(items.length>limit?`<small class="now-more">+${items.length-limit}</small>`:'');
+  }
+  function schedule(delay){
+    clearTimeout(timer);
+    timer=setTimeout(tick, delay);
+  }
+  async function tick(){
+    clearTimeout(timer);
+    if(inFlight) inFlight.abort();
+    const controller=new AbortController();
+    inFlight=controller;
+    try{
+      const r=await fetch('/api/live-summary', {cache:'no-store', signal:controller.signal});
+      const j=await r.json();
+      render(j.sessions||[], j.downloads||[]);
+    } catch(e){
+      if(!controller.signal.aborted) render([], []);
+    } finally {
+      if(inFlight===controller){
+        inFlight=null;
+        schedule(document.hidden ? 30000 : 5000);
+      }
+    }
+  }
+  window.addEventListener('focus', tick);
+  window.addEventListener('online', tick);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) tick(); });
+  window.addEventListener('resize', ()=>{ lastSignature=null; tick(); });
+  tick();
+})();
+</script>{% endif %}
+</body>
+</html>

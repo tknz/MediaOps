@@ -1,0 +1,36 @@
+services:
+  app:
+    image: tknz/mediaops:latest
+    container_name: mediaops
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - mediaops_config:/config
+      - ./imports:/imports:ro
+
+  db:
+    image: postgres:16-alpine
+    container_name: mediaops-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-mediaops}
+      POSTGRES_USER: ${DB_USER:-mediaops}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - mediaops_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mediaops -d mediaops"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mediaops_config:
+  mediaops_postgres:
