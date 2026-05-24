@@ -2556,7 +2556,6 @@ async def live(request: Request, db: Session = Depends(get_db)):
         'request': request, 'user': user, 'sessions': enriched_sessions, 'downloads': downloads,
         'ops_stats': ops_stats(downloads), 'config': cfg, 'live_stats': live_stats,
     })
-    response.headers['Refresh'] = '10'
     response.headers['Cache-Control'] = 'no-store'
     return response
 

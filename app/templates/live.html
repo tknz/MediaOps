@@ -1,19 +1,23 @@
 {% extends 'base.html' %}
 {% block content %}
+<div class="live-page" data-live-page data-admin="{{ 'true' if user.is_admin else 'false' }}">
 <div class="live-head">
-  <h1>Live now</h1>
+  <div class="live-title-stack">
+    <h1>Live now</h1>
+    <p class="live-sync-status" data-live-sync>Live updates active</p>
+  </div>
   <aside class="bandwidth-card" aria-label="Current bandwidth">
     <div>
       <p class="eyebrow">Current bandwidth</p>
-      <strong>{{ '%.1f'|format(live_stats.total_mbps) }} Mb/s</strong>
-      <span>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
+      <strong data-live-bandwidth>{{ '%.1f'|format(live_stats.total_mbps) }} Mb/s</strong>
+      <span data-live-summary>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
     </div>
-    <div class="bandwidth-graph" aria-hidden="true">
+    <div class="bandwidth-graph" aria-hidden="true" data-live-bars>
       {% for h in live_stats.bars %}<i style="height:{{ h }}%; animation-delay:-{{ loop.index0 * 0.19 }}s"></i>{% endfor %}
     </div>
   </aside>
 </div>
-<div class="live-grid">
+<div class="live-grid" data-live-sessions>
 {% for s in sessions %}
 <article class="stream-card">
   <div class="art"{% if s.thumb %} style="background-image:url('/plex-image?path={{ s.thumb|urlencode }}')"{% endif %}></div>
@@ -36,7 +40,7 @@
     </ul>
     {% if user.is_admin %}
     <div class="stream-actions calm-actions">
-      {% if s.session_id %}<form method="post" action="/live/terminate"><input type="hidden" name="session_id" value="{{ s.session_id }}"><input name="reason" placeholder="Message if stopping"><button class="stop-button" type="submit">Stop</button></form>{% endif %}
+      {% if s.session_id %}<form method="post" action="/live/terminate" data-live-terminate><input type="hidden" name="session_id" value="{{ s.session_id }}"><input name="reason" placeholder="Message if stopping" autocomplete="off"><button class="stop-button" type="submit">Stop</button></form>{% endif %}
       <details class="moderation-menu"><summary>Ban options for {{ s.user }}</summary><div>
         {% if s.remote_public_address %}<form method="post" action="/users/{{ s.user|urlencode }}/blocks"><input type="hidden" name="block_type" value="ip"><input type="hidden" name="value" value="{{ s.remote_public_address }}"><input type="hidden" name="label" value="{{ s.isp or s.org or s.ptr or s.remote_public_address }}"><input type="hidden" name="message" value="The IP address you are connecting from is banned. Please contact your server administrator."><input type="hidden" name="return_to" value="/users/{{ s.user|urlencode }}?tab=bans"><button class="quiet-warn" type="submit">Ban this IP for {{ s.user }}</button></form>{% endif %}
         {% if s.machine_identifier %}<form method="post" action="/users/{{ s.user|urlencode }}/blocks"><input type="hidden" name="block_type" value="device"><input type="hidden" name="value" value="{{ s.machine_identifier }}"><input type="hidden" name="label" value="{{ s.product or s.player or s.device or s.machine_identifier }}"><input type="hidden" name="message" value="The device you are connecting from is banned. Please contact your server administrator."><input type="hidden" name="return_to" value="/users/{{ s.user|urlencode }}?tab=bans"><button class="quiet-warn" type="submit">Ban this device</button></form>{% endif %}
@@ -63,8 +67,8 @@
 </div>
 
 <section class="panel ops-panel">
-  <div class="section-head"><div><p class="eyebrow">Operations</p><h2>Downloads and processing</h2></div><span class="muted">{{ ops_stats.remaining_label }} remaining</span></div>
-  <div class="ops-grid">
+  <div class="section-head"><div><p class="eyebrow">Operations</p><h2>Downloads and processing</h2></div><span class="muted" data-live-remaining>{{ ops_stats.remaining_label }} remaining</span></div>
+  <div class="ops-grid" data-live-downloads>
   {% for q in downloads %}
     <article class="ops-card">
       <div><p class="eyebrow">{{ q.source }} · {{ q.status }}</p><h3>{{ q.title }}</h3>{% if q.message %}<small>{{ q.message }}</small>{% endif %}</div>
@@ -76,5 +80,7 @@
   {% endfor %}
   </div>
 </section>
+</div>
 
+<script src="/static/live.js?v=20260524-live1" defer></script>
 {% endblock %}
