@@ -64,6 +64,35 @@ class JsonServiceClient:
 
 
 class PlexClient(JsonServiceClient):
+    async def background_transcodes(self):
+        xml = await self.get('/status/sessions/background')
+        root = ET.fromstring(xml)
+        jobs = []
+        for item in root.findall('TranscodeJob'):
+            key = item.attrib.get('key') or item.attrib.get('session') or item.attrib.get('ratingKey') or item.attrib.get('title')
+            progress = item.attrib.get('progress')
+            size = item.attrib.get('size')
+            jobs.append({
+                'item_key': f"plex-background:{key}"[:240],
+                'source': 'Plex transcode',
+                'title': item.attrib.get('title') or 'Background transcode',
+                'status': item.attrib.get('type') or 'transcode',
+                'quality': item.attrib.get('videoDecision') or item.attrib.get('audioDecision') or 'Background transcode',
+                'protocol': 'plex',
+                'indexer': 'Background',
+                'timeleft': None,
+                'size_bytes': int(size or 0) if size else None,
+                'size_left_bytes': None,
+                'size_gb': round(float(size or 0) / 1e9, 2) if size else None,
+                'progress': round(float(progress), 1) if progress else None,
+                'tracked_download_status': item.attrib.get('type') or 'transcode',
+                'tracked_download_state': item.attrib.get('key'),
+                'message': 'Background transcode job',
+                'download_id': item.attrib.get('key'),
+                'rating_key': item.attrib.get('ratingKey'),
+            })
+        return jobs
+
     async def libraries(self):
         xml = await self.get('/library/sections')
         root = ET.fromstring(xml)

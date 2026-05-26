@@ -10,7 +10,7 @@
     <div>
       <p class="eyebrow">Current bandwidth</p>
       <strong data-live-bandwidth>{{ '%.1f'|format(live_stats.total_mbps) }} Mb/s</strong>
-      <span data-live-summary>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
+      <span data-live-summary>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} playback transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.background_transcodes }} background transcode{{ '' if ops_stats.background_transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
     </div>
     <div class="bandwidth-graph" aria-hidden="true" data-live-bars>
       {% for h in live_stats.bars %}<i style="height:{{ h }}%; animation-delay:-{{ loop.index0 * 0.19 }}s"></i>{% endfor %}
@@ -82,5 +82,5 @@
 </section>
 </div>
 
-<script src="/static/live.js?v=20260525-mobile1" defer></script>
+<script src="/static/live.js?v=20260527-bgtranscode1" defer></script>
 {% endblock %}

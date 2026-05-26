@@ -306,8 +306,15 @@ async def scheduled_plex_poll():
 
 
 async def scheduled_downloads_poll():
+    cfg = all_settings()
     radarr, sonarr = await service_clients()
     queue = []
+    if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
+        try:
+            client = PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token']))
+            queue += await client.background_transcodes()
+        except Exception:
+            pass
     if radarr:
         try:
             payload = await radarr.queue()
@@ -1235,12 +1242,14 @@ def active_download_payloads(db: Session) -> list[dict]:
 def ops_stats(downloads: list[dict]) -> dict:
     active = [d for d in downloads if (d.get('status') or '').lower() not in {'completed', 'complete'}]
     processing = [d for d in downloads if 'process' in ((d.get('status') or '') + ' ' + (d.get('tracked_download_state') or '')).lower()]
+    background_transcodes = [d for d in downloads if (d.get('source') or '').lower() == 'plex transcode']
     size_left = sum(int(d.get('size_left_bytes') or 0) for d in active)
     total_size = sum(int(d.get('size_bytes') or 0) for d in active)
     return {
         'downloads': len(downloads),
         'active_downloads': len(active),
         'processing': len(processing),
+        'background_transcodes': len(background_transcodes),
         'remaining_bytes': size_left,
         'remaining_label': format_bytes(size_left) if size_left else '0 B',
         'total_label': format_bytes(total_size) if total_size else '0 B',

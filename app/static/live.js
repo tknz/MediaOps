@@ -22,7 +22,8 @@
   const number=value=>Number.isFinite(Number(value)) ? Number(value) : 0;
   const pct=value=>Math.max(0, Math.min(100, number(value)));
   const gb=value=>value ? `${(number(value)/1000000000).toFixed(2)} GB` : '—';
-  const transcodeLabel=count=>`${count} transcode${count===1 ? '' : 's'}`;
+  const playbackTranscodeLabel=count=>`${count} playback transcode${count===1 ? '' : 's'}`;
+  const backgroundTranscodeLabel=count=>`${count} background transcode${count===1 ? '' : 's'}`;
 
   function signature(payload){
     const sessions=(payload.sessions||[]).map(s=>[
@@ -60,8 +61,9 @@
     const paused=Number(stats.paused_sessions||0);
     const transcodes=Number(stats.transcodes||0);
     const downloads=Number(ops.active_downloads||0);
+    const backgroundTranscodes=Number(ops.background_transcodes||0);
     if(bandwidth) bandwidth.textContent=`${mbps.toFixed(1)} Mb/s`;
-    if(summary) summary.textContent=`${active} streaming · ${paused} paused · ${transcodeLabel(transcodes)} · ${downloads} downloading`;
+    if(summary) summary.textContent=`${active} streaming · ${paused} paused · ${playbackTranscodeLabel(transcodes)} · ${backgroundTranscodeLabel(backgroundTranscodes)} · ${downloads} downloading`;
     if(remaining) remaining.textContent=`${ops.remaining_label||'0 B'} remaining`;
     if(bars){
       bars.innerHTML=(stats.bars||[]).map((h, index)=>
@@ -143,10 +145,14 @@
   }
 
   function downloadCard(item){
+    const isPlexTranscode=(item.source||'').toLowerCase()==='plex transcode';
+    const meta=isPlexTranscode
+      ? `${esc(item.quality||'Background transcode')} · ${item.size_gb ? `${esc(item.size_gb)} GB` : 'size unknown'}`
+      : `${esc(item.quality||'—')} · ${esc(item.indexer||'—')} · ${esc(item.timeleft||'—')}${item.size_gb ? ` · ${esc(item.size_gb)} GB` : ''}`;
     return `<article class="ops-card">
       <div><p class="eyebrow">${esc(item.source)} · ${esc(item.status)}</p><h3>${esc(item.title)}</h3>${item.message ? `<small>${esc(item.message)}</small>` : ''}</div>
       <div class="progress"><span style="width:${pct(item.progress)}%"></span></div>
-      <p class="ops-meta">${esc(item.quality||'—')} · ${esc(item.indexer||'—')} · ${esc(item.timeleft||'—')}${item.size_gb ? ` · ${esc(item.size_gb)} GB` : ''}</p>
+      <p class="ops-meta">${meta}</p>
     </article>`;
   }
 

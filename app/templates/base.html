@@ -18,7 +18,7 @@
   let timer=null;
   let inFlight=null;
   const visibleLimit=()=>window.matchMedia('(min-width: 1500px)').matches ? 4 : 3;
-  const signature=(sessions,downloads)=>sessions.map(s=>['s',s.session_key,s.user,s.title,s.state,s.thumb].join('|')).concat(downloads.map(d=>['d',d.item_key,d.source,d.title,d.status,d.progress].join('|'))).join('~');
+  const signature=(sessions,downloads)=>sessions.map(s=>['s',s.session_key,s.user,s.title,s.state,s.thumb].join('|')).concat(downloads.map(d=>['d',d.item_key,d.source,d.title,d.status,d.progress,d.message].join('|'))).join('~');
   function render(sessions,downloads){
     const nextSignature=signature(sessions,downloads);
     if(nextSignature===lastSignature) return;
