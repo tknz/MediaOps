@@ -9,3 +9,4 @@ __pycache__/
 .DS_Store
 art-cache/
 *.db
+docs/AI_CODEBASE_NOTES.md
