@@ -171,6 +171,44 @@ Advanced optional endpoints:
 
 - Plex webhooks are implemented but not required. They are disabled unless `PLEX_WEBHOOK_TOKEN` is set. Normal history collection uses Plex polling, not webhooks.
 - API bearer tokens are only for automation against the JSON API. Normal browser use does not need them. Leave `API_ADMIN_TOKEN` and `API_TOKENS` blank unless you are deliberately wiring another tool into MediaOps.
+- Home Assistant can poll `GET /api/integrations/homeassistant/status` with a scoped bearer token. MediaOps can also send request-change events to a Home Assistant webhook when `HOMEASSISTANT_WEBHOOK_URL` is set.
+- AI tools can call the MCP-compatible JSON-RPC endpoint at `POST /api/mcp`. Give those clients a read-only token with `mcp.read` or `integrations.read`.
+
+Example scoped tokens:
+
+```env
+API_TOKENS=mo_replace_with_32_plus_random_chars=homeassistant:ha.read integrations.read;mo_replace_with_another_random_value=ai:mcp.read
+```
+
+Generate real token values with something like:
+
+```sh
+printf 'mo_%s\n' "$(openssl rand -hex 32)"
+```
+
+## Home Assistant
+
+There are two supported paths.
+
+**Polling integration:** copy `integrations/homeassistant/custom_components/mediaops` into Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add the MediaOps integration from Devices & Services. It asks for:
+
+- MediaOps URL, for example `https://mediaops.example.com`
+- A bearer token with `ha.read` or `integrations.read`
+
+It creates sensors for live streams, active streams, paused streams, playback transcodes, background transcodes, active operations, pending requests, and current bandwidth.
+
+**Webhook notifications:** create a Home Assistant automation with a webhook trigger, then set `HOMEASSISTANT_WEBHOOK_URL` in MediaOps Settings or environment. MediaOps posts events such as `requests_changed`, `request_approved`, `request_declined`, and `test`.
+
+## AI / MCP
+
+MediaOps exposes a small HTTP JSON-RPC endpoint at `POST /api/mcp` for AI tools that can speak MCP-style tool calls over HTTP. It uses the same bearer tokens as the JSON API.
+
+Available tools:
+
+- `mediaops.status`: current streams, operations, request counts, and bandwidth
+- `mediaops.overview`: usage summary for 1, 7, 30, 90, or 365 days
+- `mediaops.pending_requests`: recent requests waiting for approval
+- `mediaops.history_search`: recent watch history by title or username
 
 ## Tautulli History Import
 

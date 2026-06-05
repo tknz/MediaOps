@@ -36,6 +36,8 @@ from .services.request_intelligence import pending_request_payload
 from .services.local_auth import hash_password, local_auth_configured, local_plex_id, verify_password
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
+from .integrations import router as integrations_router
+from .services.webhooks import notify_homeassistant
 
 
 PENDING_PLEX_AUTHS: dict[str, dict] = {}
@@ -161,6 +163,7 @@ app = FastAPI(title=settings.app_name)
 scheduler = AsyncIOScheduler()
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site='lax', https_only=settings.base_url.startswith('https://'))
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
+app.include_router(integrations_router)
 templates = Jinja2Templates(directory='app/templates')
 templates.env.globals['media_server_label'] = media_server_label
 
@@ -286,7 +289,10 @@ def dedupe_requests(rows):
 
 async def scheduled_request_sync():
     with SessionLocal() as db:
-        await sync_requests(db)
+        changed = await sync_requests(db)
+        if changed:
+            pending = db.scalar(select(func.count(MediaRequest.id)).where(MediaRequest.status.in_(['pending', 'requested', '1']))) or 0
+            await notify_homeassistant('requests_changed', {'changed': changed, 'pending_requests': int(pending)})
 
 
 async def scheduled_plex_account_refresh():
@@ -1389,6 +1395,8 @@ async def _settings_from_form(request: Request) -> dict:
         'job_plex_live_seconds': first('job_plex_live_seconds', '30'),
         'job_plex_accounts_minutes': first('job_plex_accounts_minutes', '60'),
         'job_requests_minutes': first('job_requests_minutes', str(settings.sync_interval_minutes)),
+        'homeassistant_webhook_url': first('homeassistant_webhook_url'),
+        'homeassistant_webhook_token': first('homeassistant_webhook_token'),
     }
     if 'local_auth_username' in form:
         values['local_auth_username'] = first('local_auth_username', 'admin') or 'admin'
@@ -1889,6 +1897,26 @@ async def settings_import_tautulli(request: Request, db: Session = Depends(get_d
 
 
 
+@app.post('/settings/test-homeassistant-webhook')
+async def settings_test_homeassistant_webhook(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    form = await request.form()
+    if configured():
+        if not user or not user.is_admin:
+            return RedirectResponse('/', status_code=302)
+    elif not setup_token_valid(request, form):
+        return Response('Setup session token required', status_code=403)
+    set_settings(await _settings_from_form(request))
+    configure_scheduler()
+    from .integrations import homeassistant_status_payload
+
+    delivered = await notify_homeassistant('test', homeassistant_status_payload(db))
+    return_to = str(form.get('return_to') or '/settings')
+    message = 'Sent test webhook.' if delivered else 'Webhook was not delivered. Check the URL and Home Assistant logs.'
+    target = append_query_preserving_fragment(return_to, {'test_kind': 'homeassistant', 'test_ok': '1' if delivered else '0', 'test_message': message})
+    return RedirectResponse(target, status_code=303)
+
+
 @app.post('/settings/enrich-tautulli-bandwidth')
 async def settings_enrich_tautulli_bandwidth(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -2036,6 +2064,7 @@ async def seerr_approve_request_api(request_id: str, db: Session = Depends(get_d
     if row:
         row.status = 'approved'
         db.commit()
+        await notify_homeassistant('request_approved', {'request_id': request_id, 'title': row.title, 'requester': row.requester_name})
     return {'ok': True, 'request_id': request_id, 'status': 'approved'}
 
 
@@ -2050,6 +2079,7 @@ async def seerr_decline_request_api(request_id: str, db: Session = Depends(get_d
     if row:
         row.status = 'declined'
         db.commit()
+        await notify_homeassistant('request_declined', {'request_id': request_id, 'title': row.title, 'requester': row.requester_name})
     return {'ok': True, 'request_id': request_id, 'status': 'declined'}
 
 
@@ -2305,6 +2335,7 @@ async def approve_download_request(request_id: int, request: Request, db: Sessio
                 await SeerrClient(ServiceConfig(url=cfg['seerr_url'], api_key=cfg['seerr_api_key'])).approve_request(row.source_id)
                 row.status = 'approved'
                 db.commit()
+                await notify_homeassistant('request_approved', {'request_id': row.source_id, 'title': row.title, 'requester': row.requester_name})
             except Exception:
                 pass
     return RedirectResponse('/requests', status_code=303)
@@ -2323,6 +2354,7 @@ async def decline_download_request(request_id: int, request: Request, db: Sessio
                 await SeerrClient(ServiceConfig(url=cfg['seerr_url'], api_key=cfg['seerr_api_key'])).decline_request(row.source_id)
                 row.status = 'declined'
                 db.commit()
+                await notify_homeassistant('request_declined', {'request_id': row.source_id, 'title': row.title, 'requester': row.requester_name})
             except Exception:
                 pass
     return RedirectResponse('/requests', status_code=303)

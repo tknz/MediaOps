@@ -10,3 +10,4 @@ __pycache__
 screenshots
 docs/screenshots
 docs/AI_CODEBASE_NOTES.md
+integrations/homeassistant/

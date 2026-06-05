@@ -33,6 +33,7 @@
     <button type="button" data-settings-tab="apps"><b>Apps</b><small>Seerr, Tautulli, SABnzbd</small></button>
     <button type="button" data-settings-tab="arr"><b>Radarr/Sonarr</b><small>Movie and TV instances</small></button>
     <button type="button" data-settings-tab="jobs"><b>Jobs</b><small>Polling and sync intervals</small></button>
+    <button type="button" data-settings-tab="integrations"><b>Integrations</b><small>Home Assistant and API</small></button>
     <button type="button" data-settings-tab="auth"><b>Auth</b><small>Local admin sign-in</small></button>
   </nav>
 
@@ -60,6 +61,14 @@
 
   <div class="settings-tab-panel" data-settings-panel="jobs">
   <section class="panel"><div class="section-head"><div><p class="eyebrow">Scheduled jobs</p><h2>Background refresh</h2><p class="muted">Regular work MediaOps runs itself. Tautulli history import runs when Tautulli is first connected; live history comes from Plex after that.</p></div></div><div class="job-grid">{% for job in jobs %}<label class="job-card"><span><b>{{ job.label }}</b><small>{{ job.description }}</small>{% if job.next_run %}<small>Next: {{ job.next_run.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}</span><input name="{{ job.setting }}" value="{{ job.value }}"><em>{{ job.unit }}</em></label>{% endfor %}</div></section>
+  </div>
+
+  <div class="settings-tab-panel" data-settings-panel="integrations">
+  <section class="service-grid">
+    <article class="service-tile"><div><p class="eyebrow">Home Assistant</p><h2>Webhook events</h2><p class="muted">Optional outbound notifications for request changes and admin actions. Use a Home Assistant webhook URL if you want automations pushed immediately.</p></div><label>Webhook URL{{ setting_input('homeassistant_webhook_url', values.homeassistant_webhook_url, 'https://homeassistant.example.com/api/webhook/mediaops') }}</label><label>Shared header token{{ setting_input('homeassistant_webhook_token', values.homeassistant_webhook_token, '', '', true) }}</label><div class="tile-actions"><button class="mini" type="submit" formaction="/settings/test-homeassistant-webhook">Send test webhook</button>{{ test_status('homeassistant') }}</div></article>
+
+    <article class="service-tile"><div><p class="eyebrow">API</p><h2>Automation endpoints</h2><p class="muted">Home Assistant and AI tools use bearer tokens from the container environment. Create a token beginning with mo_ and grant only the scopes that integration needs.</p></div><code class="code-line">GET /api/integrations/homeassistant/status</code><code class="code-line">POST /api/mcp</code><p class="muted">Useful scopes: integrations.read, ha.read, mcp.read. Use integrations.write or ha.write only for webhook tests and future write actions.</p></article>
+  </section>
   </div>
 
   <div class="settings-tab-panel" data-settings-panel="auth">

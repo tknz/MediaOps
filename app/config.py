@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     api_admin_token: str = ''
     api_tokens: str = ''
     plex_webhook_token: str = ''
+    homeassistant_webhook_url: str = ''
+    homeassistant_webhook_token: str = ''
 
     @model_validator(mode='after')
     def build_database_url(self):

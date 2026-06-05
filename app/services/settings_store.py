@@ -34,6 +34,8 @@ DEFAULTS = {
     'job_requests_minutes': str(settings.sync_interval_minutes),
     'local_auth_username': settings.local_auth_username,
     'local_auth_password_hash': settings.local_auth_password_hash,
+    'homeassistant_webhook_url': settings.homeassistant_webhook_url,
+    'homeassistant_webhook_token': settings.homeassistant_webhook_token,
 }
 
 ENV_OVERRIDES = {
@@ -54,6 +56,8 @@ ENV_OVERRIDES = {
     'sonarr_instances': settings.sonarr_instances,
     'local_auth_username': settings.local_auth_username,
     'local_auth_password_hash': settings.local_auth_password_hash,
+    'homeassistant_webhook_url': settings.homeassistant_webhook_url,
+    'homeassistant_webhook_token': settings.homeassistant_webhook_token,
 }
 
 CONFIG_KEYS = {
@@ -79,6 +83,8 @@ CONFIG_KEYS = {
     'JOB_REQUESTS_MINUTES': 'job_requests_minutes',
     'LOCAL_AUTH_USERNAME': 'local_auth_username',
     'LOCAL_AUTH_PASSWORD_HASH': 'local_auth_password_hash',
+    'HOMEASSISTANT_WEBHOOK_URL': 'homeassistant_webhook_url',
+    'HOMEASSISTANT_WEBHOOK_TOKEN': 'homeassistant_webhook_token',
 }
 
 WRITE_ORDER = [
@@ -100,6 +106,8 @@ WRITE_ORDER = [
     'job_downloads_seconds',
     'job_plex_accounts_minutes',
     'job_requests_minutes',
+    'homeassistant_webhook_url',
+    'homeassistant_webhook_token',
     'local_auth_username',
     'local_auth_password_hash',
 ]
