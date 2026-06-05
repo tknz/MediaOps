@@ -11,6 +11,7 @@ from .api_auth import AuthContext, require_auth
 from .db import get_db
 from .models import ActiveDownloadItem, ActivePlexSession, MediaRequest, PlexSession, UserBlock
 from .services.clients import PlexClient, ServiceConfig
+from .services.network_enrichment import lookup_isp, reverse_dns
 from .services.settings_store import all_settings, media_server_label
 from .services.webhooks import notify_homeassistant
 
@@ -81,8 +82,9 @@ def _session_payload(row: ActivePlexSession) -> dict:
         'device': row.device,
         'machine_identifier': row.machine_id,
         'platform': row.platform,
-        'remote_public_address': row.remote_public_address,
         'player_address': row.player_address,
+        'remote_public_address': row.remote_public_address,
+        'ip_address': row.ip_address,
         'bandwidth_kbps': int(row.bandwidth_kbps or 0),
         'transcode_decision': row.transcode_decision,
         'started_at': row.started_at.isoformat() if row.started_at else None,
@@ -103,7 +105,17 @@ def _block_payload(row: UserBlock) -> dict:
     }
 
 
-def homeassistant_status_payload(db: Session) -> dict:
+async def _enriched_session_payloads(rows: list[ActivePlexSession]) -> list[dict]:
+    payloads = []
+    for row in rows[:10]:
+        payload = _session_payload(row)
+        address = payload.get('remote_public_address') or payload.get('player_address') or payload.get('ip_address') or ''
+        enrich = await lookup_isp(address) if address else {'isp': None, 'org': None, 'as': None}
+        payloads.append({**payload, 'ptr': reverse_dns(address) if address else None, **enrich})
+    return payloads
+
+
+def homeassistant_status_payload(db: Session, session_payloads: list[dict] | None = None) -> dict:
     sessions = db.scalars(select(ActivePlexSession).order_by(ActivePlexSession.last_seen_at.desc())).all()
     operations = db.scalars(select(ActiveDownloadItem).order_by(ActiveDownloadItem.last_seen_at.desc(), ActiveDownloadItem.title)).all()
     blocks = db.scalars(select(UserBlock).where(UserBlock.active == True).order_by(UserBlock.updated_at.desc(), UserBlock.created_at.desc()).limit(50)).all()
@@ -131,7 +143,7 @@ def homeassistant_status_payload(db: Session) -> dict:
         'bandwidth_mbps': round(total_kbps / 1000, 2),
         'requests': requests,
         'pending_requests': requests['requested'],
-        'sessions': [_session_payload(row) for row in sessions[:10]],
+        'sessions': session_payloads if session_payloads is not None else [_session_payload(row) for row in sessions[:10]],
         'operations': [_active_download_payload(row) for row in operations[:10]],
         'active_bans': len(blocks),
         'bans': [_block_payload(row) for row in blocks],
@@ -159,9 +171,10 @@ def _overview_payload(db: Session, days: int = 30) -> dict:
 
 
 @router.get('/api/integrations/homeassistant/status')
-def homeassistant_status(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+async def homeassistant_status(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     _require_integration_read(context)
-    return homeassistant_status_payload(db)
+    sessions = db.scalars(select(ActivePlexSession).order_by(ActivePlexSession.last_seen_at.desc())).all()
+    return homeassistant_status_payload(db, await _enriched_session_payloads(sessions))
 
 
 @router.get('/api/integrations/homeassistant/sessions/{session_key}/art')

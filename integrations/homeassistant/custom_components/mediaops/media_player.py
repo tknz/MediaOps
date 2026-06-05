@@ -77,10 +77,18 @@ class MediaOpsSessionPlayer(CoordinatorEntity, MediaPlayerEntity):
             "player": session.get("player"),
             "device": session.get("device"),
             "platform": session.get("platform"),
+            "player_address": session.get("player_address"),
             "remote_public_address": session.get("remote_public_address"),
+            "ip_address": session.get("ip_address"),
+            "isp": session.get("isp"),
+            "org": session.get("org"),
+            "as": session.get("as"),
+            "ptr": session.get("ptr"),
             "machine_identifier": session.get("machine_identifier"),
             "bandwidth_kbps": session.get("bandwidth_kbps"),
             "transcode_decision": session.get("transcode_decision"),
+            "started_at": session.get("started_at"),
+            "last_seen_at": session.get("last_seen_at"),
         }
 
     async def async_get_media_image(self):
