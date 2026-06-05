@@ -31,15 +31,23 @@ Authorization: Bearer mo_xxx
 
 The response contains live stream counts, transcode counts, active operations, request counts, bandwidth, and compact session/operation lists.
 
-The custom component lives in:
+The Home Assistant custom integration lives in:
 
 ```text
-integrations/homeassistant/custom_components/mediaops
+custom_components/mediaops
 ```
 
 In MediaOps, create a Home Assistant token in `Settings -> Integrations`.
 
-Copy that folder to Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add MediaOps from Devices & Services with the MediaOps URL and the token.
+Recommended install is through HACS as a custom repository:
+
+```text
+https://github.com/tknz/MediaOps
+```
+
+Choose category `Integration`, install MediaOps, restart Home Assistant, then add MediaOps from Devices & Services with the MediaOps URL and token.
+
+For manual installs, copy `custom_components/mediaops` to Home Assistant's `custom_components/mediaops`.
 
 ## Home Assistant Webhooks
 

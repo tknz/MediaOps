@@ -1,5 +1,7 @@
 # MediaOps
 
+[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tknz&repository=MediaOps&category=integration)
+
 MediaOps is a self-hosted operations view for Plex and the common tools around it. Seerr, Radarr, Sonarr, SABnzbd, and Tautulli.
 
 It is developed for the admin the person running the server. It helps answer key questions in one tool: who is streaming, who requested what, which accounts look shared, what is downloading, and which media is taking space without being watched.
@@ -182,14 +184,34 @@ printf 'mo_%s\n' "$(openssl rand -hex 32)"
 
 ## Home Assistant
 
-There are two supported paths.
+MediaOps includes a Home Assistant integration for a live operations dashboard, stream controls, ban actions, active ban visibility, bandwidth, transcodes, and request counters.
 
-**Polling integration:** copy `integrations/homeassistant/custom_components/mediaops` into Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add the MediaOps integration from Devices & Services. It asks for:
+### Install With HACS
+
+If HACS is installed, click:
+
+[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tknz&repository=MediaOps&category=integration)
+
+Or add it manually in HACS:
+
+1. Open HACS.
+2. Open custom repositories.
+3. Add `https://github.com/tknz/MediaOps`.
+4. Choose category `Integration`.
+5. Install MediaOps.
+6. Restart Home Assistant.
+7. Add MediaOps from `Settings -> Devices & services -> Add integration`.
+
+The integration asks for:
 
 - MediaOps URL, for example `https://mediaops.example.com`
 - A token created in `Settings -> Integrations`
 
-It creates sensors for live streams, active streams, paused streams, playback transcodes, background transcodes, active operations, pending requests, and current bandwidth.
+After setup, MediaOps creates a sidebar dashboard in Home Assistant. The dashboard hides idle stream slots and shows active streams with artwork, user, player, IP, ISP, bandwidth, transcode state, stop controls, and ban buttons.
+
+### Manual Install
+
+If you are not using HACS, copy `custom_components/mediaops` into Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add the MediaOps integration from Devices & Services.
 
 **Webhook notifications:** create a Home Assistant automation with a webhook trigger, then set `HOMEASSISTANT_WEBHOOK_URL` in MediaOps Settings or environment. MediaOps posts events such as `requests_changed`, `request_approved`, `request_declined`, and `test`.
 
