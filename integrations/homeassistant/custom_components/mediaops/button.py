@@ -12,6 +12,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     for idx in range(5):
         entities.extend([
             MediaOpsSessionActionButton(coordinator, idx, "stop", "Stop stream"),
+            MediaOpsSessionActionButton(coordinator, idx, "ban_user", "Ban user"),
             MediaOpsSessionActionButton(coordinator, idx, "ban_ip", "Ban IP"),
             MediaOpsSessionActionButton(coordinator, idx, "ban_device", "Ban device"),
         ])
@@ -52,6 +53,8 @@ class MediaOpsSessionActionButton(CoordinatorEntity, ButtonEntity):
             return bool(session.get("remote_public_address"))
         if self._action == "ban_device":
             return bool(session.get("machine_identifier"))
+        if self._action == "ban_user":
+            return bool(session.get("user"))
         return bool(session.get("session_key"))
 
     async def async_press(self) -> None:
@@ -60,6 +63,8 @@ class MediaOpsSessionActionButton(CoordinatorEntity, ButtonEntity):
             return
         if self._action == "stop":
             await self.coordinator.api.terminate_session(session["session_key"], "Stopped from Home Assistant")
+        elif self._action == "ban_user":
+            await self.coordinator.api.ban_session_user(session["session_key"])
         elif self._action == "ban_ip":
             await self.coordinator.api.ban_session_ip(session["session_key"])
         elif self._action == "ban_device":
@@ -87,7 +92,7 @@ class MediaOpsUnbanButton(CoordinatorEntity, ButtonEntity):
     def extra_state_attributes(self):
         ban = self._ban or {}
         return {
-            "block_id": ban.get("id"),
+            "ban_id": ban.get("id"),
             "username": ban.get("username"),
             "type": ban.get("type"),
             "value": ban.get("value"),
@@ -98,5 +103,5 @@ class MediaOpsUnbanButton(CoordinatorEntity, ButtonEntity):
         ban = self._ban
         if not ban or not ban.get("id"):
             return
-        await self.coordinator.api.unban(int(ban["id"]))
+        await self.coordinator.api.unban(str(ban["id"]))
         await self.coordinator.async_request_refresh()

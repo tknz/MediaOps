@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from .api_auth import AuthContext, require_auth
 from .db import get_db
-from .models import ActiveDownloadItem, ActivePlexSession, MediaRequest, PlexSession, UserBlock
+from .models import ActiveDownloadItem, ActivePlexSession, MediaRequest, PlexSession, UserBlock, UserPolicy
 from .services.clients import PlexClient, ServiceConfig
 from .services.network_enrichment import lookup_isp, reverse_dns
 from .services.settings_store import all_settings, media_server_label
@@ -94,13 +94,26 @@ def _session_payload(row: ActivePlexSession) -> dict:
 
 def _block_payload(row: UserBlock) -> dict:
     return {
-        'id': row.id,
+        'id': f'block:{row.id}',
         'username': row.username,
         'type': row.block_type,
         'value': row.value,
         'label': row.label,
         'message': row.message,
         'created_at': row.created_at.isoformat() if row.created_at else None,
+        'updated_at': row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _policy_ban_payload(row: UserPolicy) -> dict:
+    return {
+        'id': f'policy:{row.id}',
+        'username': row.username,
+        'type': 'user',
+        'value': row.username,
+        'label': row.username,
+        'message': row.block_message,
+        'created_at': None,
         'updated_at': row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -119,6 +132,8 @@ def homeassistant_status_payload(db: Session, session_payloads: list[dict] | Non
     sessions = db.scalars(select(ActivePlexSession).order_by(ActivePlexSession.last_seen_at.desc())).all()
     operations = db.scalars(select(ActiveDownloadItem).order_by(ActiveDownloadItem.last_seen_at.desc(), ActiveDownloadItem.title)).all()
     blocks = db.scalars(select(UserBlock).where(UserBlock.active == True).order_by(UserBlock.updated_at.desc(), UserBlock.created_at.desc()).limit(50)).all()
+    policy_bans = db.scalars(select(UserPolicy).where(UserPolicy.blocked == True).order_by(UserPolicy.updated_at.desc()).limit(50)).all()
+    bans = [_policy_ban_payload(row) for row in policy_bans] + [_block_payload(row) for row in blocks]
     active_sessions = [s for s in sessions if (s.state or '').lower() != 'paused']
     active_ops = [o for o in operations if (o.status or '').lower() not in {'completed', 'complete'}]
     background_transcodes = [o for o in operations if (o.source or '').lower() == 'plex transcode']
@@ -145,8 +160,8 @@ def homeassistant_status_payload(db: Session, session_payloads: list[dict] | Non
         'pending_requests': requests['requested'],
         'sessions': session_payloads if session_payloads is not None else [_session_payload(row) for row in sessions[:10]],
         'operations': [_active_download_payload(row) for row in operations[:10]],
-        'active_bans': len(blocks),
-        'bans': [_block_payload(row) for row in blocks],
+        'active_bans': len(bans),
+        'bans': bans,
     }
 
 
@@ -260,15 +275,48 @@ async def homeassistant_ban_session_device(session_key: str, payload: dict = Bod
     return {'ok': True, 'session_key': session_key, 'block_id': block.id, 'action': 'ban-device'}
 
 
-@router.post('/api/integrations/homeassistant/bans/{block_id}/unban')
-async def homeassistant_unban(block_id: int, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+@router.post('/api/integrations/homeassistant/sessions/{session_key}/ban-user')
+async def homeassistant_ban_session_user(session_key: str, payload: dict = Body(default={}), db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     _require_integration_admin(context)
-    block = db.get(UserBlock, block_id)
-    if not block or not block.active:
-        raise HTTPException(status_code=404, detail='Active ban not found')
-    block.active = False
+    row = db.get(ActivePlexSession, session_key)
+    if not row or not row.username:
+        raise HTTPException(status_code=404, detail='Session user not found')
+    message = str((payload or {}).get('message') or 'Your streaming access is currently banned. Please contact your server administrator.')
+    policy = db.scalar(select(UserPolicy).where(func.lower(UserPolicy.username) == row.username.lower()))
+    if not policy:
+        policy = UserPolicy(username=row.username)
+        db.add(policy)
+    policy.blocked = True
+    policy.block_message = message
     db.commit()
-    return {'ok': True, 'block_id': block_id, 'action': 'unban'}
+    if row.session_id:
+        cfg = all_settings()
+        if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
+            await PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token'])).terminate_session(row.session_id, message)
+    return {'ok': True, 'session_key': session_key, 'username': row.username, 'action': 'ban-user'}
+
+
+@router.post('/api/integrations/homeassistant/bans/{ban_id}/unban')
+async def homeassistant_unban(ban_id: str, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    _require_integration_admin(context)
+    kind, _, raw_id = ban_id.partition(':')
+    if not raw_id and kind.isdigit():
+        kind, raw_id = 'block', kind
+    if kind == 'policy' and raw_id.isdigit():
+        policy = db.get(UserPolicy, int(raw_id))
+        if not policy or not policy.blocked:
+            raise HTTPException(status_code=404, detail='Active user ban not found')
+        policy.blocked = False
+        policy.block_message = None
+    elif kind == 'block' and raw_id.isdigit():
+        block = db.get(UserBlock, int(raw_id))
+        if not block or not block.active:
+            raise HTTPException(status_code=404, detail='Active ban not found')
+        block.active = False
+    else:
+        raise HTTPException(status_code=404, detail='Active ban not found')
+    db.commit()
+    return {'ok': True, 'ban_id': ban_id, 'action': 'unban'}
 
 
 @router.post('/api/integrations/homeassistant/webhook/test')
