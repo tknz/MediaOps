@@ -23,6 +23,7 @@ SENSORS = [
     MediaOpsSensorDescription(key="background_transcodes", name="MediaOps background transcodes", native_unit_of_measurement="jobs", value_fn=lambda d: d.get("background_transcodes")),
     MediaOpsSensorDescription(key="active_operations", name="MediaOps active operations", native_unit_of_measurement="items", value_fn=lambda d: d.get("active_operations")),
     MediaOpsSensorDescription(key="pending_requests", name="MediaOps pending requests", native_unit_of_measurement="requests", value_fn=lambda d: d.get("pending_requests")),
+    MediaOpsSensorDescription(key="active_bans", name="MediaOps active bans", native_unit_of_measurement="bans", value_fn=lambda d: d.get("active_bans")),
     MediaOpsSensorDescription(key="bandwidth_mbps", name="MediaOps bandwidth", native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND, value_fn=lambda d: d.get("bandwidth_mbps")),
 ]
 
@@ -45,4 +46,7 @@ class MediaOpsSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         data = self.coordinator.data or {}
-        return {"server": data.get("server"), "updated_at": data.get("updated_at")}
+        attrs = {"server": data.get("server"), "updated_at": data.get("updated_at")}
+        if self.entity_description.key == "active_bans":
+            attrs["bans"] = data.get("bans") or []
+        return attrs

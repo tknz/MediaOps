@@ -90,9 +90,23 @@ def _session_payload(row: ActivePlexSession) -> dict:
     }
 
 
+def _block_payload(row: UserBlock) -> dict:
+    return {
+        'id': row.id,
+        'username': row.username,
+        'type': row.block_type,
+        'value': row.value,
+        'label': row.label,
+        'message': row.message,
+        'created_at': row.created_at.isoformat() if row.created_at else None,
+        'updated_at': row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
 def homeassistant_status_payload(db: Session) -> dict:
     sessions = db.scalars(select(ActivePlexSession).order_by(ActivePlexSession.last_seen_at.desc())).all()
     operations = db.scalars(select(ActiveDownloadItem).order_by(ActiveDownloadItem.last_seen_at.desc(), ActiveDownloadItem.title)).all()
+    blocks = db.scalars(select(UserBlock).where(UserBlock.active == True).order_by(UserBlock.updated_at.desc(), UserBlock.created_at.desc()).limit(50)).all()
     active_sessions = [s for s in sessions if (s.state or '').lower() != 'paused']
     active_ops = [o for o in operations if (o.status or '').lower() not in {'completed', 'complete'}]
     background_transcodes = [o for o in operations if (o.source or '').lower() == 'plex transcode']
@@ -119,6 +133,8 @@ def homeassistant_status_payload(db: Session) -> dict:
         'pending_requests': requests['requested'],
         'sessions': [_session_payload(row) for row in sessions[:10]],
         'operations': [_active_download_payload(row) for row in operations[:10]],
+        'active_bans': len(blocks),
+        'bans': [_block_payload(row) for row in blocks],
     }
 
 
@@ -229,6 +245,17 @@ async def homeassistant_ban_session_device(session_key: str, payload: dict = Bod
         if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
             await PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token'])).terminate_session(row.session_id, message)
     return {'ok': True, 'session_key': session_key, 'block_id': block.id, 'action': 'ban-device'}
+
+
+@router.post('/api/integrations/homeassistant/bans/{block_id}/unban')
+async def homeassistant_unban(block_id: int, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    _require_integration_admin(context)
+    block = db.get(UserBlock, block_id)
+    if not block or not block.active:
+        raise HTTPException(status_code=404, detail='Active ban not found')
+    block.active = False
+    db.commit()
+    return {'ok': True, 'block_id': block_id, 'action': 'unban'}
 
 
 @router.post('/api/integrations/homeassistant/webhook/test')

@@ -28,6 +28,9 @@ class MediaOpsApi:
     async def ban_session_device(self, session_key: str) -> dict:
         return await self._request("POST", f"/api/integrations/homeassistant/sessions/{session_key}/ban-device", json={})
 
+    async def unban(self, block_id: int) -> dict:
+        return await self._request("POST", f"/api/integrations/homeassistant/bans/{block_id}/unban", json={})
+
     async def session_art(self, session_key: str) -> tuple[bytes, str]:
         async with self._session.get(f"{self._url}/api/integrations/homeassistant/sessions/{session_key}/art", headers=self._headers) as response:
             if response.status >= 400:

@@ -15,6 +15,8 @@ async def async_setup_entry(hass, entry, async_add_entities):
             MediaOpsSessionActionButton(coordinator, idx, "ban_ip", "Ban IP"),
             MediaOpsSessionActionButton(coordinator, idx, "ban_device", "Ban device"),
         ])
+    for idx in range(10):
+        entities.append(MediaOpsUnbanButton(coordinator, idx))
     async_add_entities(entities)
 
 
@@ -62,4 +64,39 @@ class MediaOpsSessionActionButton(CoordinatorEntity, ButtonEntity):
             await self.coordinator.api.ban_session_ip(session["session_key"])
         elif self._action == "ban_device":
             await self.coordinator.api.ban_session_device(session["session_key"])
+        await self.coordinator.async_request_refresh()
+
+
+class MediaOpsUnbanButton(CoordinatorEntity, ButtonEntity):
+    def __init__(self, coordinator, index: int) -> None:
+        super().__init__(coordinator)
+        self._index = index
+        self._attr_unique_id = f"mediaops_unban_{index + 1}"
+        self._attr_name = f"MediaOps unban {index + 1}"
+
+    @property
+    def _ban(self) -> dict | None:
+        bans = (self.coordinator.data or {}).get("bans") or []
+        return bans[self._index] if self._index < len(bans) else None
+
+    @property
+    def available(self) -> bool:
+        return bool((self._ban or {}).get("id"))
+
+    @property
+    def extra_state_attributes(self):
+        ban = self._ban or {}
+        return {
+            "block_id": ban.get("id"),
+            "username": ban.get("username"),
+            "type": ban.get("type"),
+            "value": ban.get("value"),
+            "label": ban.get("label"),
+        }
+
+    async def async_press(self) -> None:
+        ban = self._ban
+        if not ban or not ban.get("id"):
+            return
+        await self.coordinator.api.unban(int(ban["id"]))
         await self.coordinator.async_request_refresh()
