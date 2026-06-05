@@ -143,6 +143,18 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class IntegrationToken(Base):
+    __tablename__ = 'integration_tokens'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    scopes: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
+
 class ActivePlexSession(Base):
     __tablename__ = 'active_plex_sessions'
     session_key: Mapped[str] = mapped_column(String(128), primary_key=True)

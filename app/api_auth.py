@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import get_db
 from .models import User
+from .services.integration_tokens import authenticate_integration_token
 
 ADMIN_SCOPE = '*'
 
@@ -84,10 +85,19 @@ def bearer_token(request: Request) -> str | None:
     return token.strip()
 
 
-def token_auth_context(request: Request) -> AuthContext | None:
+def token_auth_context(request: Request, db: Session | None = None) -> AuthContext | None:
     token = bearer_token(request)
     if not token:
         return None
+    if db is not None:
+        integration = authenticate_integration_token(db, token)
+        if integration:
+            return AuthContext(
+                username=integration.name,
+                is_admin=False,
+                scopes=_split_scopes(integration.scopes),
+                method='integration-token',
+            )
     for configured in configured_api_tokens():
         if compare_digest(token, configured.token):
             return AuthContext(
@@ -111,7 +121,7 @@ def session_auth_context(request: Request, db: Session) -> AuthContext | None:
 
 
 def auth_context(request: Request, db: Session = Depends(get_db)) -> AuthContext | None:
-    return token_auth_context(request) or session_auth_context(request, db)
+    return token_auth_context(request, db) or session_auth_context(request, db)
 
 
 def require_auth(request: Request, db: Session = Depends(get_db)) -> AuthContext:

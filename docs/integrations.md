@@ -4,16 +4,18 @@ MediaOps exposes integration endpoints for Home Assistant and AI tools. These en
 
 ## Token Scopes
 
-Tokens must start with `mo_` and be long enough to avoid accidental weak secrets.
+Home Assistant tokens should be created in MediaOps Settings under `Integrations`. MediaOps stores only a hash, shows the token once, records when it was last used, and lets you revoke it later.
+
+Environment-managed tokens are still supported for advanced automation. They must start with `mo_` and be long enough to avoid accidental weak secrets.
 
 ```sh
 printf 'mo_%s\n' "$(openssl rand -hex 32)"
 ```
 
-Example:
+Environment example:
 
 ```env
-API_TOKENS=mo_xxx=homeassistant:ha.read integrations.read;mo_yyy=ai:mcp.read
+API_TOKENS=mo_xxx=ai:mcp.read
 ```
 
 Use `API_ADMIN_TOKEN` only for fully trusted admin automation.
@@ -35,7 +37,9 @@ The custom component lives in:
 integrations/homeassistant/custom_components/mediaops
 ```
 
-Copy that folder to Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add MediaOps from Devices & Services.
+In MediaOps, create a Home Assistant token in `Settings -> Integrations`.
+
+Copy that folder to Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add MediaOps from Devices & Services with the MediaOps URL and the token.
 
 ## Home Assistant Webhooks
 

@@ -171,16 +171,10 @@ Advanced optional endpoints:
 
 - Plex webhooks are implemented but not required. They are disabled unless `PLEX_WEBHOOK_TOKEN` is set. Normal history collection uses Plex polling, not webhooks.
 - API bearer tokens are only for automation against the JSON API. Normal browser use does not need them. Leave `API_ADMIN_TOKEN` and `API_TOKENS` blank unless you are deliberately wiring another tool into MediaOps.
-- Home Assistant can poll `GET /api/integrations/homeassistant/status` with a scoped bearer token. MediaOps can also send request-change events to a Home Assistant webhook when `HOMEASSISTANT_WEBHOOK_URL` is set.
+- Home Assistant can poll `GET /api/integrations/homeassistant/status` with a scoped integration token issued from MediaOps Settings. MediaOps can also send request-change events to a Home Assistant webhook when `HOMEASSISTANT_WEBHOOK_URL` is set.
 - AI tools can call the MCP-compatible JSON-RPC endpoint at `POST /api/mcp`. Give those clients a read-only token with `mcp.read` or `integrations.read`.
 
-Example scoped tokens:
-
-```env
-API_TOKENS=mo_replace_with_32_plus_random_chars=homeassistant:ha.read integrations.read;mo_replace_with_another_random_value=ai:mcp.read
-```
-
-Generate real token values with something like:
+For Home Assistant, create the token in `Settings -> Integrations`. For environment-managed automation, tokens still need to start with `mo_`:
 
 ```sh
 printf 'mo_%s\n' "$(openssl rand -hex 32)"
@@ -193,7 +187,7 @@ There are two supported paths.
 **Polling integration:** copy `integrations/homeassistant/custom_components/mediaops` into Home Assistant's `custom_components/mediaops`, restart Home Assistant, then add the MediaOps integration from Devices & Services. It asks for:
 
 - MediaOps URL, for example `https://mediaops.example.com`
-- A bearer token with `ha.read` or `integrations.read`
+- A token created in `Settings -> Integrations`
 
 It creates sensors for live streams, active streams, paused streams, playback transcodes, background transcodes, active operations, pending requests, and current bandwidth.
 

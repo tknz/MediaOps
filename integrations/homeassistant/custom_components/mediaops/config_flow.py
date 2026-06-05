@@ -3,7 +3,7 @@ from __future__ import annotations
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import MediaOpsApi, MediaOpsApiError
 from .const import CONF_TOKEN, CONF_URL, DOMAIN
@@ -18,7 +18,7 @@ class MediaOpsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             url = user_input[CONF_URL].rstrip("/")
             token = user_input[CONF_TOKEN].strip()
             try:
-                await MediaOpsApi(async_create_clientsession(self.hass), url, token).status()
+                await MediaOpsApi(async_get_clientsession(self.hass), url, token).status()
             except MediaOpsApiError:
                 errors["base"] = "cannot_connect"
             except Exception:

@@ -34,6 +34,7 @@ from .services.library_catalog import sync_plex_library_catalog
 from .services.service_tests import test_service
 from .services.request_intelligence import pending_request_payload
 from .services.local_auth import hash_password, local_auth_configured, local_plex_id, verify_password
+from .services.integration_tokens import DEFAULT_HOMEASSISTANT_SCOPES, active_integration_tokens, issue_integration_token, revoke_integration_token
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
 from .integrations import router as integrations_router
@@ -460,7 +461,8 @@ def maybe_schedule_initial_tautulli_sync(db: Session, values: dict[str, str]) ->
     return 'Tautulli connected. History import and bandwidth backfill are running in the background.'
 
 
-def settings_template_context(request: Request, values: dict, user, test_kind: str = '', test_ok: str = '', test_message: str = '', import_ok: str = '', import_message: str = '') -> dict:
+def settings_template_context(request: Request, values: dict, user, db: Session | None = None, test_kind: str = '', test_ok: str = '', test_message: str = '', import_ok: str = '', import_message: str = '') -> dict:
+    new_integration_token = request.session.pop('new_integration_token', None)
     return {
         'request': request,
         'values': values,
@@ -472,6 +474,9 @@ def settings_template_context(request: Request, values: dict, user, test_kind: s
         'setup_token': request.session.get('setup_token') or '',
         'test': {'kind': test_kind, 'ok': test_ok, 'message': test_message},
         'import_result': {'ok': import_ok, 'message': import_message},
+        'integration_tokens': active_integration_tokens(db) if db is not None and user and user.is_admin else [],
+        'new_integration_token': new_integration_token,
+        'default_homeassistant_scopes': DEFAULT_HOMEASSISTANT_SCOPES,
     }
 
 
@@ -1772,7 +1777,7 @@ def setup_services(request: Request, db: Session = Depends(get_db), test_kind: s
     values = all_settings()
     if redirect := setup_local_auth_required_redirect(values):
         return redirect
-    return templates.TemplateResponse('setup_services.html', settings_template_context(request, values, user, test_kind, test_ok, test_message, import_ok, import_message))
+    return templates.TemplateResponse('setup_services.html', settings_template_context(request, values, user, db, test_kind, test_ok, test_message, import_ok, import_message))
 
 
 @app.post('/setup')
@@ -1803,7 +1808,7 @@ def settings_get(request: Request, db: Session = Depends(get_db), test_kind: str
     if not user or not user.is_admin:
         return RedirectResponse('/', status_code=302)
     values = all_settings()
-    return templates.TemplateResponse('settings.html', settings_template_context(request, values, user, test_kind, test_ok, test_message, import_ok, import_message))
+    return templates.TemplateResponse('settings.html', settings_template_context(request, values, user, db, test_kind, test_ok, test_message, import_ok, import_message))
 
 
 @app.post('/settings')
@@ -1915,6 +1920,36 @@ async def settings_test_homeassistant_webhook(request: Request, db: Session = De
     message = 'Sent test webhook.' if delivered else 'Webhook was not delivered. Check the URL and Home Assistant logs.'
     target = append_query_preserving_fragment(return_to, {'test_kind': 'homeassistant', 'test_ok': '1' if delivered else '0', 'test_message': message})
     return RedirectResponse(target, status_code=303)
+
+
+@app.post('/settings/integrations/homeassistant/token')
+async def settings_issue_homeassistant_token(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user or not user.is_admin:
+        return RedirectResponse('/', status_code=302)
+    form = await request.form()
+    set_settings(await _settings_from_form(request))
+    name = str(form.get('integration_token_name') or 'Home Assistant')
+    scopes = str(form.get('integration_token_scopes') or DEFAULT_HOMEASSISTANT_SCOPES)
+    row, token = issue_integration_token(db, name, scopes, created_by=user.username)
+    request.session['new_integration_token'] = {'id': row.id, 'name': row.name, 'token': token}
+    return_to = str(form.get('return_to') or '/settings#integrations')
+    return RedirectResponse(safe_internal_redirect(return_to, '/settings#integrations'), status_code=303)
+
+
+@app.post('/settings/integrations/token/revoke')
+async def settings_revoke_integration_token(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user or not user.is_admin:
+        return RedirectResponse('/', status_code=302)
+    form = await request.form()
+    try:
+        token_id = int(form.get('token_id') or 0)
+    except ValueError:
+        token_id = 0
+    revoke_integration_token(db, token_id)
+    return_to = str(form.get('return_to') or '/settings#integrations')
+    return RedirectResponse(safe_internal_redirect(return_to, '/settings#integrations'), status_code=303)
 
 
 @app.post('/settings/enrich-tautulli-bandwidth')

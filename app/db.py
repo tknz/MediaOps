@@ -132,6 +132,15 @@ def ensure_schema_extensions():
             'user_policies': [
                 'max_concurrent_devices INTEGER',
             ],
+            'integration_tokens': [
+                'name VARCHAR(255)',
+                'token_hash VARCHAR(128)',
+                'scopes TEXT',
+                'created_by VARCHAR(255)',
+                'created_at TIMESTAMP',
+                'last_used_at TIMESTAMP',
+                'revoked_at TIMESTAMP',
+            ],
         }
         for table, columns in extensions.items():
             for col in columns:
