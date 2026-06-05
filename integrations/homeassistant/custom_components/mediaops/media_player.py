@@ -15,14 +15,13 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class MediaOpsSessionPlayer(CoordinatorEntity, MediaPlayerEntity):
-    _attr_has_entity_name = True
     _attr_supported_features = MediaPlayerEntityFeature.TURN_OFF
 
     def __init__(self, coordinator, index: int) -> None:
         super().__init__(coordinator)
         self._index = index
         self._attr_unique_id = f"mediaops_session_{index + 1}"
-        self._attr_name = f"Session {index + 1}"
+        self._attr_name = f"MediaOps session {index + 1}"
 
     @property
     def _session(self) -> dict | None:
