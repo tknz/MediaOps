@@ -16,6 +16,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 class MediaOpsSessionPlayer(CoordinatorEntity, MediaPlayerEntity):
     _attr_supported_features = MediaPlayerEntityFeature.TURN_OFF
+    _attr_entity_registry_visible_default = False
 
     def __init__(self, coordinator, index: int) -> None:
         super().__init__(coordinator)

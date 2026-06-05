@@ -24,6 +24,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class MediaOpsWebhookTestButton(CoordinatorEntity, ButtonEntity):
     _attr_name = "MediaOps send test webhook"
     _attr_unique_id = "mediaops_send_test_webhook"
+    _attr_entity_registry_visible_default = False
 
     async def async_press(self) -> None:
         await self.coordinator.api.test_webhook()
@@ -31,6 +32,8 @@ class MediaOpsWebhookTestButton(CoordinatorEntity, ButtonEntity):
 
 
 class MediaOpsSessionActionButton(CoordinatorEntity, ButtonEntity):
+    _attr_entity_registry_visible_default = False
+
     def __init__(self, coordinator, index: int, action: str, label: str) -> None:
         super().__init__(coordinator)
         self._index = index
@@ -73,6 +76,8 @@ class MediaOpsSessionActionButton(CoordinatorEntity, ButtonEntity):
 
 
 class MediaOpsUnbanButton(CoordinatorEntity, ButtonEntity):
+    _attr_entity_registry_visible_default = False
+
     def __init__(self, coordinator, index: int) -> None:
         super().__init__(coordinator)
         self._index = index
