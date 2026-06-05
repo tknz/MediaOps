@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..models import IntegrationToken
 
 
-DEFAULT_HOMEASSISTANT_SCOPES = 'ha.read integrations.read'
+DEFAULT_HOMEASSISTANT_SCOPES = 'ha.read integrations.read ha.write ha.admin'
 
 
 def token_hash(token: str) -> str:

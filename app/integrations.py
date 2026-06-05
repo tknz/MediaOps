@@ -3,14 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from .api_auth import AuthContext, require_auth
 from .db import get_db
-from .models import ActiveDownloadItem, ActivePlexSession, MediaRequest, PlexSession
-from .services.settings_store import media_server_label
+from .models import ActiveDownloadItem, ActivePlexSession, MediaRequest, PlexSession, UserBlock
+from .services.clients import PlexClient, ServiceConfig
+from .services.settings_store import all_settings, media_server_label
 from .services.webhooks import notify_homeassistant
 
 
@@ -40,6 +41,11 @@ def _require_integration_write(context: AuthContext) -> None:
         raise HTTPException(status_code=403, detail='Scope required: integrations.write')
 
 
+def _require_integration_admin(context: AuthContext) -> None:
+    if not (context.is_admin or context.has_scope('integrations.admin') or context.has_scope('ha.admin')):
+        raise HTTPException(status_code=403, detail='Scope required: integrations.admin')
+
+
 def _status_slug(value: str | None) -> str:
     return STATUS_LABEL.get(str(value or '').lower(), str(value or 'unknown').lower())
 
@@ -62,15 +68,21 @@ def _active_download_payload(row: ActiveDownloadItem) -> dict:
 def _session_payload(row: ActivePlexSession) -> dict:
     return {
         'session_key': row.session_key,
+        'session_id': row.session_id,
         'user': row.username,
+        'user_url': f'/users/{row.username}',
         'title': row.grandparent_title or row.title or row.content_title,
         'subtitle': row.content_title if row.grandparent_title else row.parent_title,
         'media_type': row.media_type,
         'state': row.state,
         'library': row.library,
+        'thumb': row.thumb_path,
         'player': row.player,
         'device': row.device,
+        'machine_identifier': row.machine_id,
         'platform': row.platform,
+        'remote_public_address': row.remote_public_address,
+        'player_address': row.player_address,
         'bandwidth_kbps': int(row.bandwidth_kbps or 0),
         'transcode_decision': row.transcode_decision,
         'started_at': row.started_at.isoformat() if row.started_at else None,
@@ -134,6 +146,89 @@ def _overview_payload(db: Session, days: int = 30) -> dict:
 def homeassistant_status(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     _require_integration_read(context)
     return homeassistant_status_payload(db)
+
+
+@router.get('/api/integrations/homeassistant/sessions/{session_key}/art')
+async def homeassistant_session_art(session_key: str, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    _require_integration_read(context)
+    row = db.get(ActivePlexSession, session_key)
+    if not row or not row.thumb_path:
+        return Response(status_code=404)
+    cfg = all_settings()
+    if not cfg.get('plex_server_url') or not cfg.get('plex_server_token'):
+        return Response(status_code=404)
+    import httpx
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(f"{cfg['plex_server_url'].rstrip('/')}{row.thumb_path}", headers={'X-Plex-Token': cfg['plex_server_token']})
+        ctype = resp.headers.get('content-type', '')
+        if resp.status_code >= 400:
+            return Response(status_code=resp.status_code)
+        if not ctype.startswith('image/'):
+            return Response(status_code=415)
+        return Response(content=resp.content, media_type=ctype, status_code=resp.status_code)
+
+
+@router.post('/api/integrations/homeassistant/sessions/{session_key}/terminate')
+async def homeassistant_terminate_session(session_key: str, payload: dict = Body(default={}), db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    _require_integration_write(context)
+    row = db.get(ActivePlexSession, session_key)
+    if not row or not row.session_id:
+        raise HTTPException(status_code=404, detail='Active session not found')
+    cfg = all_settings()
+    if not cfg.get('plex_server_url') or not cfg.get('plex_server_token'):
+        raise HTTPException(status_code=503, detail='Plex is not configured')
+    reason = str((payload or {}).get('reason') or 'Stopped by MediaOps from Home Assistant')
+    await PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token'])).terminate_session(row.session_id, reason)
+    return {'ok': True, 'session_key': session_key, 'action': 'terminate'}
+
+
+def _upsert_session_block(db: Session, row: ActivePlexSession, block_type: str, value: str, label: str, message: str) -> UserBlock:
+    username = row.username or 'Unknown'
+    block = db.scalar(select(UserBlock).where(
+        func.lower(UserBlock.username) == username.lower(),
+        UserBlock.block_type == block_type,
+        UserBlock.value == value,
+    ))
+    if not block:
+        block = UserBlock(username=username, block_type=block_type, value=value)
+        db.add(block)
+    block.label = label or block.label
+    block.message = message or block.message
+    block.active = True
+    db.commit()
+    db.refresh(block)
+    return block
+
+
+@router.post('/api/integrations/homeassistant/sessions/{session_key}/ban-ip')
+async def homeassistant_ban_session_ip(session_key: str, payload: dict = Body(default={}), db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    _require_integration_admin(context)
+    row = db.get(ActivePlexSession, session_key)
+    if not row or not row.remote_public_address:
+        raise HTTPException(status_code=404, detail='Session public IP not found')
+    message = str((payload or {}).get('message') or 'The IP address you are connecting from is banned. Please contact your server administrator.')
+    block = _upsert_session_block(db, row, 'ip', row.remote_public_address, row.remote_public_address, message)
+    if row.session_id:
+        cfg = all_settings()
+        if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
+            await PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token'])).terminate_session(row.session_id, message)
+    return {'ok': True, 'session_key': session_key, 'block_id': block.id, 'action': 'ban-ip'}
+
+
+@router.post('/api/integrations/homeassistant/sessions/{session_key}/ban-device')
+async def homeassistant_ban_session_device(session_key: str, payload: dict = Body(default={}), db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    _require_integration_admin(context)
+    row = db.get(ActivePlexSession, session_key)
+    if not row or not row.machine_id:
+        raise HTTPException(status_code=404, detail='Session device identifier not found')
+    label = row.product or row.player or row.device or row.machine_id
+    message = str((payload or {}).get('message') or 'The device you are connecting from is banned. Please contact your server administrator.')
+    block = _upsert_session_block(db, row, 'device', row.machine_id, label, message)
+    if row.session_id:
+        cfg = all_settings()
+        if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
+            await PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token'])).terminate_session(row.session_id, message)
+    return {'ok': True, 'session_key': session_key, 'block_id': block.id, 'action': 'ban-device'}
 
 
 @router.post('/api/integrations/homeassistant/webhook/test')
