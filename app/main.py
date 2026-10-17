@@ -1253,12 +1253,25 @@ def reconcile_download_queue(db: Session, queue: list[dict]) -> tuple[int, int]:
     return len(seen), removed
 
 
+def download_display_title(title: str) -> str:
+    # Presentation only: retain the original release name for inspection.
+    match = re.search(r"[ ._(]+((?:19|20)\d{2})(?=[ ._)]+(?:\d{3,4}p|WEB|BluRay|REPACK|MULTI|AMZN|NF|HDTV|Hybrid)|[)]?$)", title, re.I)
+    if match:
+        name = title[:match.start()].replace('.', ' ').replace('_', ' ').strip()
+        return f"{name} ({match[1]})"
+    episode = re.search(r'[ ._]+(S\d{1,2}(?:E\d{1,3})?)(?=[ ._-])', title, re.I)
+    if episode:
+        return title[:episode.start()].replace('.', ' ').replace('_', ' ').strip() + ' · ' + episode[1].upper()
+    return title
+
+
 def download_item_payload(row: ActiveDownloadItem) -> dict:
     size = int(row.size_bytes or 0)
     return {
         'item_key': row.item_key,
         'source': row.source,
         'title': row.title,
+        'display_title': download_display_title(row.title),
         'status': row.status or row.tracked_download_status or 'unknown',
         'quality': row.quality,
         'protocol': row.protocol,

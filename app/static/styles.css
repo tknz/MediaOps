@@ -140,3 +140,31 @@ button,input,select,textarea{font:inherit}.settings-hero{margin-bottom:16px}.set
   .status-tabs a,.period-selector a{padding:8px 10px}
   th,td{max-width:220px}
 }
+
+/* Playback remains visual; queue data stays in compact, readable rows. */
+.now-chip,.now-chip.idle{max-width:none;gap:10px;flex-shrink:0}
+.now-chip>span.now-playback-count,.now-chip>span.now-queue-count{font-size:.8rem;font-weight:500;white-space:nowrap}
+.now-chip .now-queue-count{border-left:1px solid var(--line);padding-left:10px}
+.playback-section{margin:26px 0}.playback-section h2{margin:0;font-weight:600}
+.playback-empty{color:var(--muted);margin:0;padding:18px 0;font-size:.95rem;font-weight:400}
+.live-page .live-sync-status,.live-page [data-live-summary]{font-weight:400;font-size:.85rem;line-height:1.5}
+.live-page .ops-panel{padding:20px;overflow:hidden;min-width:0}
+.ops-panel .section-head{align-items:center;margin-bottom:18px;gap:12px}.ops-panel h2{margin:0;font-weight:600}.ops-panel .section-head p{margin:4px 0 0;font-size:.85rem;font-weight:400}
+.download-table-wrap{overflow-x:auto;width:100%;-webkit-overflow-scrolling:touch}
+.download-table{display:table;table-layout:fixed;min-width:620px;width:100%;background:transparent;border:0;border-radius:0;white-space:normal}
+.download-table th{font-size:.75rem;font-weight:500;letter-spacing:.03em;color:var(--muted);background:transparent;padding:0 12px 12px;text-transform:none}
+.download-table th:first-child{width:42%}.download-table th:nth-child(2){width:16%}.download-table th:nth-child(3){width:17%}.download-table th:nth-child(4){width:12%}.download-table th:nth-child(5){width:13%}
+.download-table td{padding:15px 12px;vertical-align:top;white-space:normal;overflow:visible;max-width:none;font-size:.85rem;font-weight:400}
+.download-table td:first-child,.download-table th:first-child{padding-left:0}.download-table td:last-child,.download-table th:last-child{padding-right:0}
+.download-name strong{display:block;font-size:.94rem;line-height:1.45;font-weight:550;overflow-wrap:anywhere}
+.download-source{display:block;color:var(--muted);font-size:.74rem;line-height:1.5;margin-top:4px}
+.download-details{margin-top:5px;font-size:.73rem;color:var(--muted)}.download-details summary{cursor:pointer;font-weight:400}.download-details p{overflow-wrap:anywhere;line-height:1.5;margin:8px 0;font-weight:400}
+.download-state{text-transform:capitalize;font-weight:400;line-height:1.5}
+.download-progress span{display:block;font-variant-numeric:tabular-nums;font-size:.8rem;margin-bottom:7px}
+.download-progress progress{display:block;width:100%;height:4px;border:0;accent-color:var(--blue);border-radius:4px;background:#202a35}
+.download-progress progress::-webkit-progress-bar{background:#202a35;border-radius:4px}.download-progress progress::-webkit-progress-value{background:var(--blue);border-radius:4px}
+.download-number{font-variant-numeric:tabular-nums;white-space:nowrap!important;color:var(--muted)}
+.download-warning{color:var(--accent);font-size:.78rem;line-height:1.5;margin:7px 0 0;overflow-wrap:anywhere}.download-empty{color:var(--muted)}
+@media(max-width:760px){.live-page .ops-panel{padding:15px}.download-table{min-width:600px}.ops-panel .section-head{display:flex;align-items:flex-start;flex-wrap:wrap}.ops-panel [data-live-remaining]{font-size:.8rem}.now-chip{display:flex;min-width:0}.now-chip b{font-size:.65rem}.now-chip>span.now-playback-count,.now-chip>span.now-queue-count{font-size:.75rem}}
+.live-page .bandwidth-card{height:auto;min-height:120px;max-width:100%;padding:18px 20px}
+@media(min-width:761px) and (max-width:1500px){header{flex-wrap:wrap;gap:14px}header nav{order:2;flex-basis:100%;flex-wrap:wrap}.server-pill{flex-shrink:0}.now-chip{order:0;flex-basis:auto;margin-left:auto;margin-right:0}}

@@ -23,7 +23,6 @@
   const pct=value=>Math.max(0, Math.min(100, number(value)));
   const gb=value=>value ? `${(number(value)/1000000000).toFixed(2)} GB` : '—';
   const playbackTranscodeLabel=count=>`${count} playback transcode${count===1 ? '' : 's'}`;
-  const backgroundTranscodeLabel=count=>`${count} background transcode${count===1 ? '' : 's'}`;
 
   function signature(payload){
     const sessions=(payload.sessions||[]).map(s=>[
@@ -31,7 +30,7 @@
       s.bandwidth,s.part_decision,s.transcode_decision,s.remote_public_address,s.machine_identifier
     ].join('|'));
     const downloads=(payload.downloads||[]).map(d=>[
-      d.item_key,d.source,d.title,d.status,d.progress,d.message,d.timeleft
+      d.item_key,d.source,d.title,d.display_title,d.status,d.progress,d.message,d.timeleft,d.size_bytes,d.size_left_bytes,d.quality,d.indexer
     ].join('|'));
     return sessions.concat(downloads).join('~');
   }
@@ -41,7 +40,7 @@
     if(active && page.contains(active) && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)){
       return true;
     }
-    if(page.querySelector('details.moderation-menu[open]')) return true;
+    if(page.querySelector('details[open]')) return true;
     return [...page.querySelectorAll('form[data-live-terminate] input[name="reason"]')]
       .some(input=>input.value.trim().length>0);
   }
@@ -60,11 +59,9 @@
     const active=Number(stats.active_sessions||0);
     const paused=Number(stats.paused_sessions||0);
     const transcodes=Number(stats.transcodes||0);
-    const downloads=Number(ops.active_downloads||0);
-    const backgroundTranscodes=Number(ops.background_transcodes||0);
     if(bandwidth) bandwidth.textContent=`${mbps.toFixed(1)} Mb/s`;
-    if(summary) summary.textContent=`${active} streaming · ${paused} paused · ${playbackTranscodeLabel(transcodes)} · ${backgroundTranscodeLabel(backgroundTranscodes)} · ${downloads} downloading`;
-    if(remaining) remaining.textContent=`${ops.remaining_label||'0 B'} remaining`;
+    if(summary) summary.textContent=`${active} playing${paused ? ` · ${paused} paused` : ''}${transcodes ? ` · ${playbackTranscodeLabel(transcodes)}` : ''}`;
+    if(remaining) remaining.textContent=`${(payload.downloads||[]).length} in queue · ${ops.remaining_label||'0 B'} left`;
     if(bars){
       bars.innerHTML=(stats.bars||[]).map((h, index)=>
         `<i style="height:${pct(h)}%; animation-delay:-${index*0.19}s"></i>`
@@ -144,39 +141,40 @@
     </article>`;
   }
 
-  function downloadCard(item){
-    const isPlexTranscode=(item.source||'').toLowerCase()==='plex transcode';
-    const meta=isPlexTranscode
-      ? `${esc(item.quality||'Background transcode')} · ${item.size_gb ? `${esc(item.size_gb)} GB` : 'size unknown'}`
-      : `${esc(item.quality||'—')} · ${esc(item.indexer||'—')} · ${esc(item.timeleft||'—')}${item.size_gb ? ` · ${esc(item.size_gb)} GB` : ''}`;
-    return `<article class="ops-card">
-      <div><p class="eyebrow">${esc(item.source)} · ${esc(item.status)}</p><h3>${esc(item.title)}</h3>${item.message ? `<small>${esc(item.message)}</small>` : ''}</div>
-      <div class="progress"><span style="width:${pct(item.progress)}%"></span></div>
-      <p class="ops-meta">${meta}</p>
-    </article>`;
+  function downloadRow(item){
+    const title=item.display_title||item.title||'Unknown title';
+    const progress=item.progress==null ? null : pct(item.progress);
+    const status=text(item.status||'Unknown').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/_/g,' ');
+    return `<tr>
+      <td class="download-name"><strong>${esc(title)}</strong><span class="download-source">${esc(item.source)}${item.quality ? ` · ${esc(item.quality)}` : ''}</span><details class="download-details"><summary>Release details</summary><p>${esc(item.title)}</p>${item.indexer ? `<p>Indexer: ${esc(item.indexer)}</p>` : ''}</details>${item.message ? `<p class="download-warning">${esc(item.message)}</p>` : ''}</td>
+      <td><span class="download-state">${esc(status)}</span></td>
+      <td class="download-progress">${progress==null ? '<span>Not reported</span>' : `<span>${Math.round(progress)}%</span><progress max="100" value="${progress}" aria-label="Progress for ${esc(title)}"></progress>`}</td>
+      <td class="download-number">${esc(gb(item.size_bytes))}</td>
+      <td class="download-number">${esc(item.timeleft||'—')}</td>
+    </tr>`;
   }
 
   function renderPayload(payload){
     renderStats(payload);
     if(isEditing()){
-      setSyncStatus('Live updates paused while editing', 'paused');
+      setSyncStatus('Updates paused while viewing details or editing', 'paused');
       return;
     }
     const nextSignature=signature(payload);
     if(nextSignature===lastSignature){
-      setSyncStatus('Live updates active', 'ok');
+      setSyncStatus('Updates automatically', 'ok');
       return;
     }
     lastSignature=nextSignature;
     if(sessionsGrid){
       const sessions=payload.sessions||[];
-      sessionsGrid.innerHTML=sessions.length ? sessions.map(sessionCard).join('') : '<p>Nothing playing right now.</p>';
+      sessionsGrid.innerHTML=sessions.length ? sessions.map(sessionCard).join('') : '<p class="playback-empty">No one is watching right now.</p>';
     }
     if(downloadsGrid){
       const downloads=payload.downloads||[];
-      downloadsGrid.innerHTML=downloads.length ? downloads.map(downloadCard).join('') : '<p class="muted">No active downloads or processing jobs.</p>';
+      downloadsGrid.innerHTML=downloads.length ? downloads.map(downloadRow).join('') : '<tr><td colspan="5" class="download-empty">Queue is empty.</td></tr>';
     }
-    setSyncStatus('Live updates active', 'ok');
+    setSyncStatus('Updates automatically', 'ok');
   }
 
   function schedule(delay){
@@ -194,7 +192,7 @@
       if(!response.ok) throw new Error(`Live refresh failed: ${response.status}`);
       renderPayload(await response.json());
     } catch(error){
-      if(!controller.signal.aborted) setSyncStatus('Live updates unavailable', 'bad');
+      if(!controller.signal.aborted) setSyncStatus('Unable to refresh. Retrying…', 'bad');
     } finally {
       if(inFlight===controller){
         inFlight=null;

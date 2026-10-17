@@ -3,20 +3,21 @@
 <div class="live-page" data-live-page data-admin="{{ 'true' if user.is_admin else 'false' }}">
 <div class="live-head">
   <div class="live-title-stack">
-    <h1>Live now</h1>
-    <p class="live-sync-status" data-live-sync>Live updates active</p>
+    <h1>Now</h1>
+    <p class="live-sync-status" data-live-sync>Updates automatically</p>
   </div>
   <aside class="bandwidth-card" aria-label="Current bandwidth">
     <div>
-      <p class="eyebrow">Current bandwidth</p>
+      <p class="eyebrow">Playback bandwidth</p>
       <strong data-live-bandwidth>{{ '%.1f'|format(live_stats.total_mbps) }} Mb/s</strong>
-      <span data-live-summary>{{ live_stats.active_sessions }} streaming · {{ live_stats.paused_sessions }} paused · {{ live_stats.transcodes }} playback transcode{{ '' if live_stats.transcodes == 1 else 's' }} · {{ ops_stats.background_transcodes }} background transcode{{ '' if ops_stats.background_transcodes == 1 else 's' }} · {{ ops_stats.active_downloads }} downloading</span>
+      <span data-live-summary>{{ live_stats.active_sessions }} playing{% if live_stats.paused_sessions %} · {{ live_stats.paused_sessions }} paused{% endif %}</span>
     </div>
     <div class="bandwidth-graph" aria-hidden="true" data-live-bars>
       {% for h in live_stats.bars %}<i style="height:{{ h }}%; animation-delay:-{{ loop.index0 * 0.19 }}s"></i>{% endfor %}
     </div>
   </aside>
 </div>
+<section class="playback-section" aria-labelledby="playback-title"><div class="section-head"><h2 id="playback-title">Playing now</h2></div>
 <div class="live-grid" data-live-sessions>
 {% for s in sessions %}
 <article class="stream-card">
@@ -62,25 +63,28 @@
   </div>
 </article>
 {% else %}
-<p>Nothing playing right now.</p>
+<p class="playback-empty">No one is watching right now.</p>
 {% endfor %}
 </div>
 
-<section class="panel ops-panel">
-  <div class="section-head"><div><p class="eyebrow">Operations</p><h2>Downloads and processing</h2></div><span class="muted" data-live-remaining>{{ ops_stats.remaining_label }} remaining</span></div>
-  <div class="ops-grid" data-live-downloads>
+</section>
+<section class="panel ops-panel" aria-labelledby="download-title">
+  <div class="section-head"><div><h2 id="download-title">Downloads</h2><p class="muted">Queue and processing status</p></div><span class="muted" data-live-remaining>{{ downloads|length }} in queue · {{ ops_stats.remaining_label }} left</span></div>
+  <div class="download-table-wrap" tabindex="0" role="region" aria-label="Download queue">
+  <table class="download-table"><thead><tr><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Size</th><th scope="col">Time left</th></tr></thead>
+  <tbody data-live-downloads>
   {% for q in downloads %}
-    <article class="ops-card">
-      <div><p class="eyebrow">{{ q.source }} · {{ q.status }}</p><h3>{{ q.title }}</h3>{% if q.message %}<small>{{ q.message }}</small>{% endif %}</div>
-      <div class="progress"><span style="width:{% if q.progress is not none %}{{ q.progress }}{% else %}0{% endif %}%"></span></div>
-      <p class="ops-meta">{{ q.quality or '—' }} · {{ q.indexer or '—' }} · {{ q.timeleft or '—' }}{% if q.size_gb %} · {{ q.size_gb }} GB{% endif %}</p>
-    </article>
-  {% else %}
-    <p class="muted">No active downloads or processing jobs.</p>
-  {% endfor %}
+    <tr>
+      <td class="download-name"><strong>{{ q.display_title or q.title }}</strong><span class="download-source">{{ q.source }}{% if q.quality %} · {{ q.quality }}{% endif %}</span><details class="download-details"><summary>Release details</summary><p>{{ q.title }}</p>{% if q.indexer %}<p>Indexer: {{ q.indexer }}</p>{% endif %}</details>{% if q.message %}<p class="download-warning">{{ q.message }}</p>{% endif %}</td>
+      <td><span class="download-state">{{ q.status|replace('_',' ') }}</span></td>
+      <td class="download-progress">{% if q.progress is not none %}<span>{{ '%.0f'|format(q.progress) }}%</span><progress max="100" value="{{ q.progress }}" aria-label="Progress for {{ q.display_title or q.title }}"></progress>{% else %}<span>Not reported</span>{% endif %}</td>
+      <td class="download-number">{% if q.size_gb %}{{ q.size_gb }} GB{% else %}—{% endif %}</td>
+      <td class="download-number">{{ q.timeleft or '—' }}</td>
+    </tr>
+  {% else %}<tr><td colspan="5" class="download-empty">Queue is empty.</td></tr>{% endfor %}
+  </tbody></table>
   </div>
 </section>
 </div>
-
-<script src="/static/live.js?v=20260527-bgtranscode1" defer></script>
+<script src="/static/live.js?v=20261017-now-table" defer></script>
 {% endblock %}
