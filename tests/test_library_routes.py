@@ -43,12 +43,12 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(self.client.post('/libraries/audit/run',data={'audit':'storage'},headers={'Origin':'http://testserver'}).status_code,403)
 
     def test_overview_uses_same_plex_inventory_in_html_and_api(self):
-        inventory=dict(schema_version=2,provider='Plex',complete=True,checked_at=datetime.utcnow().isoformat(),errors=[],total_bytes=28_000_000_000_000,movies=1382,shows=185,episodes=8300,tracks=23909,videos=231,photos=0,sources=[dict(source='Music',kind='artist',tracks=23909,bytes=800_000_000_000)])
+        inventory=dict(schema_version=3,provider='Plex',complete=True,checked_at=datetime.utcnow().isoformat(),errors=[],total_bytes=28_000_000_000_000,movies=1382,shows=185,episodes=8300,tracks=23909,videos=231,photos=0,sources=[dict(source='Music',kind='artist',tracks=23909,bytes=800_000_000_000)])
         save(self.db,'inventory-summary',inventory)
         with patch.object(main,'current_user',return_value=self.user):
             html=self.client.get('/admin?period=30d')
             self.assertEqual(html.status_code,200,html.text)
-            self.assertIn('23,909 music tracks',html.text);self.assertIn('231 other videos',html.text);self.assertIn('Plex · 1 libraries',html.text)
+            self.assertIn('23,909 music files',html.text);self.assertIn('231 other videos',html.text);self.assertIn('Plex · 1 libraries',html.text)
             self.assertNotIn('movies without files',html.text)
             api=self.client.get('/api/admin/overview?period=30d')
             self.assertEqual(api.status_code,200,api.text);self.assertEqual(api.json()['inventory'],inventory)

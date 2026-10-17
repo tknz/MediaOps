@@ -68,3 +68,10 @@ class PlexInventoryTests(unittest.IsolatedAsyncioTestCase):
         client.get.side_effect=[page([video('a','/one')],2),page([],2)]
         with patch.object(inv,'PlexClient',return_value=client):
             report=await inv.plex_summary(CFG);self.assertFalse(report['complete']);self.assertTrue(report['errors'])
+
+    async def test_music_counts_distinct_files_even_with_shared_recording_ids(self):
+        client=AsyncMock();client.libraries.return_value=[dict(key='1',title='Music',type='artist'),dict(key='2',title='Shared Music',type='artist')]
+        client.get.return_value=page([video('recording-a','/album-one/song.flac',kind='track'),video('recording-a','/album-two/song.flac',kind='track')],2)
+        with patch.object(inv,'PlexClient',return_value=client):
+            report=await inv.plex_summary(CFG)
+            self.assertEqual(report['tracks'],2);self.assertEqual(report['file_count'],2);self.assertEqual(report['total_bytes'],200)

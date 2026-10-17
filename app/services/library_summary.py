@@ -8,7 +8,7 @@ from .libraries import arr_clients, movie_size, series_size
 from .settings_store import all_settings
 
 _lock = asyncio.Lock()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 async def plex_items(client, library, media_type):
     start = 0
@@ -55,7 +55,7 @@ async def plex_summary(values):
                     elif kind == 'show':
                         result['shows'].add(node.get('grandparentGuid') or shows.get(node.get('grandparentRatingKey')) or (library['key'],node.get('grandparentRatingKey') or node.get('ratingKey')))
                         result['episode_paths'].update(paths)
-                    elif kind == 'artist': result['tracks'].add(identity(node,library))
+                    elif kind == 'artist': result['tracks'].update(paths)
                     elif kind == 'photo': result['photos'].add(identity(node,library))
             except Exception as exc:
                 result['errors'].append(dict(source=library['title'],error=audit.error_label(exc)))
