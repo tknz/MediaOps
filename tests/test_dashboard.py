@@ -24,7 +24,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             instances['sonarr'][0]['client'].get.assert_awaited_once()
             report['checked_at']=(datetime.utcnow()-timedelta(hours=1)).isoformat();audit.save(db,'inventory-summary',report)
             instances['radarr'][0]['client'].get.side_effect=ValueError('unavailable')
-            failed=await inv.summary(db);self.assertFalse(failed['complete']);self.assertEqual(failed['total_bytes'],600);self.assertTrue(failed['refresh_failed'])
+            failed=await inv.summary(db,refresh=True);self.assertFalse(failed['complete']);self.assertEqual(failed['total_bytes'],600);self.assertTrue(failed['refresh_failed'])
         engine.dispose()
     async def test_download_controls_verify_exact_job_and_allowlist(self):
         job=dict(nzo_id='SABnzbd_nzo_abc',status='Downloading')

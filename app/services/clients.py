@@ -102,7 +102,7 @@ class PlexClient(JsonServiceClient):
             loc = item.find('Location')
             libs.append({
                 'key': item.attrib.get('key'), 'title': item.attrib.get('title'), 'type': item.attrib.get('type'),
-                'uuid': item.attrib.get('uuid'), 'path': loc.attrib.get('path') if loc is not None else None,
+                'agent': item.attrib.get('agent'), 'uuid': item.attrib.get('uuid'), 'path': loc.attrib.get('path') if loc is not None else None,
                 'scanned_at': item.attrib.get('scannedAt'),
             })
         return libs

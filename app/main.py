@@ -388,11 +388,17 @@ async def scheduled_library_storage():
             await library_audit.storage_audit(db)
 
 
+async def scheduled_library_inventory():
+    with SessionLocal() as db:
+        await library_summary.summary(db,refresh=True)
+
+
 def configure_scheduler() -> None:
     job_values = scheduler_values()
     with SessionLocal() as db:
         health_due = library_audit.next_run(db, 'health', timedelta(minutes=15))
         storage_due = library_audit.next_run(db, 'storage', timedelta(weeks=1))
+    scheduler.add_job(scheduled_library_inventory, 'interval', minutes=10, id='library-inventory', replace_existing=True, max_instances=1, coalesce=True, next_run_time=datetime.utcnow()+timedelta(seconds=1))
     scheduler.add_job(scheduled_library_health, 'interval', minutes=15, id='library-health', replace_existing=True, max_instances=1, coalesce=True, next_run_time=health_due)
     scheduler.add_job(scheduled_library_storage, 'interval', weeks=1, id='library-storage', replace_existing=True, max_instances=1, coalesce=True, next_run_time=storage_due)
     scheduler.add_job(scheduled_request_sync, 'interval', minutes=job_values['requests_minutes'], id='request-sync', replace_existing=True, next_run_time=datetime.utcnow())
