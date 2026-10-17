@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block content %}
+<section class="panel"><h1>Replace {{ rows|length }} movies?</h1><p>{{ saving_bytes|bytes }} potential reduction. Downloads and imports run through Radarr. Monitoring stays unchanged.</p>
+<div class="audit-table-wrap"><table class="audit-table"><thead><tr><th>Movie</th><th>Current</th><th>Replacement</th><th>Audio</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.title }} ({{ row.year }})<small>{{ row.source }} · {{ 'Monitored' if row.monitored else 'Unmonitored' }}</small></td><td>{{ row.bytes|bytes }}</td><td>{{ row.candidate.bytes|bytes }}<small>{{ row.candidate.title }}</small></td><td>{{ row.candidate.audio }}<small>{{ row.candidate.range }}</small></td></tr>{% endfor %}</tbody></table></div>
+<p>Files, playback and native release approval are checked again before sending. A changed or blocked item stops the batch.</p>
+<form method="post" action="/libraries/replacements/approve"><input type="hidden" name="confirmation" value="{{ confirmation }}"><button name="confirm" value="replace">Download {{ rows|length }} replacements</button> <a class="mini link-mini" href="/libraries/replacements">Cancel</a></form></section>
+{% endblock %}

@@ -60,6 +60,7 @@
   </div>
 
   <div class="settings-tab-panel" data-settings-panel="jobs">
+  <section class="panel"><div class="section-head"><div><h2>Smaller replacements</h2><p class="muted">Weekly · largest 50 movies · includes unmonitored</p></div><a class="mini link-mini" href="/libraries/replacements">Review replacements →</a></div></section>
   <section class="panel"><div class="section-head"><div><p class="eyebrow">Scheduled jobs</p><h2>Background refresh</h2><p class="muted">Regular work MediaOps runs itself. Tautulli history import runs when Tautulli is first connected; live history comes from Plex after that.</p></div></div><div class="job-grid">{% for job in jobs %}<label class="job-card"><span><b>{{ job.label }}</b><small>{{ job.description }}</small>{% if job.next_run %}<small>Next: {{ job.next_run.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}</span><input name="{{ job.setting }}" value="{{ job.value }}"><em>{{ job.unit }}</em></label>{% endfor %}</div></section>
   </div>
 

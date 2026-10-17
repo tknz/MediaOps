@@ -18,6 +18,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 from .config import settings
 from .db import Base, engine, SessionLocal, ensure_schema_extensions
+from .services import replacements
 from .models import MediaRequest, PlexSession, User, ActivePlexSession, ActiveDownloadItem, UserPolicy, UserBlock, UserWatchlistItem, AppSetting
 from .services.plex_auth import create_pin, fetch_identity, fetch_pin, fetch_resources, choose_server, choose_connection, plex_auth_url
 from .services.tautulli_import import import_tautulli, import_tautulli_api, enrich_tautulli_bandwidth
@@ -388,6 +389,20 @@ async def scheduled_library_storage():
             await library_audit.storage_audit(db)
 
 
+async def scheduled_replacement_approval(confirmation, actor):
+    with SessionLocal() as db:
+        try:await replacements.approve(db,confirmation,actor)
+        except Exception as exc:
+            previous=library_audit.state(db,replacements.KEY+'-approval') or {}
+            message=str(exc) if isinstance(exc,ValueError) else 'Approval stopped. Check Downloads before retrying.'
+            library_audit.save(db,replacements.KEY+'-approval',dict(previous,status='stopped',active=False,message=message))
+
+
+async def scheduled_replacements():
+    with SessionLocal() as db:
+        await replacements.scan(db)
+
+
 async def scheduled_library_inventory():
     with SessionLocal() as db:
         await library_summary.summary(db,refresh=True)
@@ -398,6 +413,11 @@ def configure_scheduler() -> None:
     with SessionLocal() as db:
         health_due = library_audit.next_run(db, 'health', timedelta(minutes=15))
         storage_due = library_audit.next_run(db, 'storage', timedelta(weeks=1))
+        replacements_due = library_audit.next_run(db, replacements.KEY, timedelta(weeks=1))
+        if (library_audit.state(db,replacements.KEY) or {}).get('status')=='running':replacements_due=datetime.utcnow()
+        approval=library_audit.state(db,replacements.KEY+'-approval') or {}
+        if approval.get('active'):library_audit.save(db,replacements.KEY+'-approval',dict(approval,status='interrupted',active=False,message='App restarted. Check Downloads before approving more.'))
+    scheduler.add_job(scheduled_replacements, 'interval', weeks=1, id='compact-replacements', replace_existing=True, max_instances=1, coalesce=True, next_run_time=replacements_due)
     scheduler.add_job(scheduled_library_inventory, 'interval', minutes=10, id='library-inventory', replace_existing=True, max_instances=1, coalesce=True, next_run_time=datetime.utcnow()+timedelta(seconds=1))
     scheduler.add_job(scheduled_library_health, 'interval', minutes=15, id='library-health', replace_existing=True, max_instances=1, coalesce=True, next_run_time=health_due)
     scheduler.add_job(scheduled_library_storage, 'interval', weeks=1, id='library-storage', replace_existing=True, max_instances=1, coalesce=True, next_run_time=storage_due)
@@ -3082,6 +3102,57 @@ async def library_audit_run(request: Request, audit: str = Form(...), view: str 
         scheduler.add_job(scheduled_library_health if audit == 'health' else scheduled_library_storage,
             'date', run_date=datetime.utcnow(), id=job_id, max_instances=1)
     return RedirectResponse('/libraries/audit/report?' + urlencode({'view':view if view in ('health','duplicates','storage') else 'health', 'running':audit}), status_code=303)
+
+
+@app.get('/api/libraries/replacements')
+def replacements_api(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    if not context.is_admin:raise HTTPException(403,'Admin required')
+    return replacements.payload(db)
+
+
+@app.get('/libraries/replacements', response_class=HTMLResponse)
+def replacements_page(request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    return templates.TemplateResponse('replacements.html',dict(request=request,user=user,report=replacements.payload(db)))
+
+
+@app.post('/libraries/replacements/scan')
+async def replacements_scan(request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    if not replacements.scan_lock.locked() and not replacements.action_lock.locked():
+        scheduler.add_job(scheduled_replacements,'date',run_date=datetime.utcnow(),id='compact-replacements-manual',replace_existing=True)
+    return RedirectResponse('/libraries/replacements',status_code=303)
+
+
+@app.post('/libraries/replacements/review', response_class=HTMLResponse)
+async def replacements_review(request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    form=await request.form()
+    try:rows=replacements.selections(db,form.getlist('selection'))
+    except ValueError as exc:raise HTTPException(422,str(exc))
+    return templates.TemplateResponse('replacements_review.html',dict(request=request,user=user,rows=rows,confirmation=replacements.token(rows),saving_bytes=sum(r['candidate']['saving_bytes'] for r in rows)))
+
+
+@app.post('/libraries/replacements/approve')
+async def replacements_approve(request: Request, confirmation: str = Form(...), confirm: str = Form(''), db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    if confirm!='replace':raise HTTPException(422,'Confirm the selected replacements.')
+    try:
+        if replacements.scan_lock.locked() or replacements.action_lock.locked() or (library_audit.state(db,replacements.KEY+'-approval') or {}).get('active'):raise ValueError('A check or approval is already running.')
+        data=replacements.serializer().loads(confirmation,max_age=600)
+        rows=replacements.selections(db,[r['key'] for r in data['rows']])
+        expected=[dict(key=r['key'],fingerprint=r['fingerprint'],candidate=r['candidate']['key']) for r in rows]
+        if data['rows']!=expected:raise ValueError('Results changed. Review again.')
+        library_audit.save(db,replacements.KEY+'-approval',dict(status='queued',active=True,total=len(rows),done=0,submitted=0))
+        scheduler.add_job(scheduled_replacement_approval,'date',run_date=datetime.utcnow(),id='compact-replacement-approval',replace_existing=False,args=[confirmation,user.username])
+    except Exception as exc:
+        message=str(exc) if isinstance(exc,ValueError) else 'Approval expired or could not be checked. Review again.'
+        return RedirectResponse('/libraries/replacements?'+urlencode({'error':message}),status_code=303)
+    return RedirectResponse('/libraries/replacements',status_code=303)
 
 
 @app.get('/libraries/{section_id}', response_class=HTMLResponse)

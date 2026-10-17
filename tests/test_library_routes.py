@@ -22,6 +22,28 @@ class RouteTests(unittest.TestCase):
         self.client=TestClient(main.app)
     def tearDown(self):
         main.app.dependency_overrides.clear();self.db.close();self.engine.dispose()
+    def test_replacements_html_api_batch_review_and_auth(self):
+        from app.services import replacements as r
+        candidate=dict(key='candidate',title='Movie.2020.2160p.HEVC.SDR.AAC2.0',bytes=10_000_000_000,saving_bytes=40_000_000_000,audio='Stereo',format='WEBDL-2160p',codec='HEVC',range='SDR label')
+        row=dict(key='0:1',fingerprint='file',source='Radarr',title='Movie',year=2020,monitored=False,bytes=50_000_000_000,format='Remux-2160p',codec='HEVC',hdr='HDR10',status='Ready',candidate=candidate)
+        save(self.db,r.KEY,dict(rows=[row],status='complete',done=1,checked_at=datetime.utcnow().isoformat()))
+        with patch.object(main,'current_user',return_value=self.user):
+            html=self.client.get('/libraries/replacements');self.assertEqual(html.status_code,200,html.text)
+            self.assertIn('Unmonitored',html.text);self.assertIn('Largest 50 movies',html.text);self.assertIn('Stereo',html.text)
+            api=self.client.get('/api/libraries/replacements').json();self.assertEqual(api['ready'],1);self.assertEqual(api['saving_bytes'],40_000_000_000)
+            with patch.object(r,'approve',AsyncMock()) as approve:
+                review=self.client.post('/libraries/replacements/review',data={'selection':'0:1'},headers={'Origin':'http://testserver'})
+                self.assertEqual(review.status_code,200,review.text);self.assertIn('Download 1 replacements',review.text);approve.assert_not_awaited()
+                response=self.client.post('/libraries/replacements/approve',data={'confirmation':r.token([row])},headers={'Origin':'http://testserver'})
+                self.assertEqual(response.status_code,422);approve.assert_not_awaited()
+                with patch.object(main.scheduler,'add_job') as schedule:
+                    response=self.client.post('/libraries/replacements/approve',data={'confirmation':r.token([row]),'confirm':'replace'},headers={'Origin':'http://testserver'},follow_redirects=False)
+                    self.assertEqual(response.status_code,303);schedule.assert_called_once();approve.assert_not_awaited()
+        main.app.dependency_overrides[main.require_auth]=lambda:AuthContext('reader',False)
+        self.assertEqual(self.client.get('/api/libraries/replacements').status_code,403)
+        with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)):
+            self.assertEqual(self.client.post('/libraries/replacements/approve',data={'confirmation':'x','confirm':'replace'},headers={'Origin':'http://testserver'}).status_code,403)
+
     def test_api_and_fallback_consistent(self):
         inv=[lib.normalise_series(dict(id=i,title=f'Show{i}',statistics=dict(sizeOnDisk=i+1)), 'Kids',0) for i in range(80)]
         lib.enrich_inventory_usage(self.db,inv)
