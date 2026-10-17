@@ -40,6 +40,9 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(report['rows']),50);self.assertEqual(report['rows'][0]['source'],'Kids');self.assertEqual(report['rows'][1]['movie_id'],299)
         self.assertEqual(report['done'],50);self.assertTrue(all(not x['monitored'] for x in report['rows']));c1.post_json.assert_not_awaited();c1.put_json.assert_not_awaited()
         self.assertNotIn('private-guid',str(report))
+        report['rows'][0].update(status='No suitable release',note='Profile excludes some resolutions.')
+        audit.save(self.db,r.KEY,report)
+        self.assertEqual(r.payload(self.db)['rows'][0]['note'],'No approved release meets the replacement rules.')
     def setup_ready(self):
         m=movie();c=AsyncMock();c.get.side_effect=lambda path,**kw: {'totalRecords':0} if path.endswith('queue') else copy.deepcopy(m);c.releases.return_value=[release()]
         instance=dict(index=0,name='Main',client=c);row=r.row(m,instance);row.update(candidate=r.choose(m,[release()]),status='Ready');audit.save(self.db,r.KEY,dict(rows=[row],status='complete',done=1))

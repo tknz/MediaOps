@@ -83,8 +83,7 @@ async def scan(db):
                         result['candidate']=choose(movie,releases)
                         result['status']='Ready' if result['candidate'] else 'No suitable release'
                         if not result['candidate']:
-                            reasons=[str(reason) for r in releases for reason in r.get('rejections',[]) if 'not wanted in profile' in str(reason)]
-                            result['note']='Profile excludes some resolutions. Review quality profile in Radarr.' if reasons else 'No approved same-resolution English encode saves 20% and 2 GB within the size limit.'
+                            result['note']='No approved release meets the replacement rules.'
                 except Exception:result['status']='Search failed';result['note']='Indexer search unavailable. Run the check again.'
                 report['done']=number+1;report['checked_at']=stamp();audit.save(db,KEY,report)
                 await asyncio.sleep(.25)
@@ -96,6 +95,8 @@ async def scan(db):
 
 def payload(db):
     report=audit.state(db,KEY) or dict(rows=[],status='not_run',done=0)
+    for row in report['rows']:
+        if row['status']=='No suitable release':row['note']='No approved release meets the replacement rules.'
     report['approval']=audit.state(db,KEY+'-approval') or {}
     report['ready']=sum(r['status']=='Ready' for r in report['rows'])
     report['saving_bytes']=sum(r['candidate']['saving_bytes'] for r in report['rows'] if r['status']=='Ready')
