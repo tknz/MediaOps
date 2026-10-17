@@ -36,7 +36,7 @@ class RouteTests(unittest.TestCase):
         f=file_record(dict(size=30_000_000_000,mediaInfo=dict(runTime='2:00:00',resolution='1920x1080',videoCodec='AV1')),dict(id=1,title='Large',tmdbId=1),'Kids','movie')
         save(self.db,'storage',dict(files=[f],checked_at=datetime.utcnow().isoformat(),duplicates=[],efficiency=efficiency_report([f]),errors=[],complete=True,limitations='Metadata only'))
         with patch.object(main,'current_user',return_value=self.user):
-            r=self.client.get('/libraries/audit/report');self.assertEqual(r.status_code,200,r.text);self.assertIn('AV1',r.text)
+            r=self.client.get('/libraries/audit/report?view=storage');self.assertEqual(r.status_code,200,r.text);self.assertIn('AV1',r.text)
         main.app.dependency_overrides[main.require_auth]=lambda:AuthContext('reader',False)
         self.assertEqual(self.client.get('/api/libraries/audit').status_code,403)
         with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)):

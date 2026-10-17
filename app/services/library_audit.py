@@ -75,8 +75,8 @@ def queue_findings(rows, previous, now):
         if blocked or stagnant:
             findings.append(dict(key=key, title=row.get('title') or 'Unknown',
                 category='import review' if blocked else 'possible stall',
-                detail='Arr reports a warning; review the native activity details. Quality and identity checks must be preserved.' if blocked else 'No observed byte/status progress for at least two hours; may be paused or post-processing.',
-                action='Review in Arr/SAB. No automatic dismissal, retry, import override or deletion.'))
+                detail='Import blocked' if blocked else 'No progress for 2+ hours',
+                action='Review Activity in the source app.'))
     return findings, observations
 
 
@@ -111,10 +111,25 @@ async def health_audit(db: Session, values=None, now=None):
 
 
 def health_message(source, severity):
-    source = re.sub(r'[^a-zA-Z0-9 _-]', '', str(source or 'Unknown'))[:100]
-    if 'list' in source.lower(): return 'Import list health warning. Check native list tests; authorization failures require reauthorization.'
-    if 'indexer' in source.lower(): return 'Indexer health warning. Check native tests and endpoint; do not change credentials automatically.'
-    return f'{source}: {severity}. Review native application health details.'
+    key = str(source or '').lower()
+    checks = [('removedseries', 'Series removed from TVDB', 'Review affected shows in Sonarr → System → Status.'),
+        ('update', 'Update check', 'Review the application update status.'),
+        ('list', 'Import list failed', 'Test the list connection; renew its login if needed.'),
+        ('indexer', 'Indexer unavailable', 'Test the indexer connection.'),
+        ('downloadclient', 'Download client unavailable', 'Test the download client connection.'),
+        ('rootfolder', 'Root folder unavailable', 'Check the media mount and folder permissions.'),
+        ('diskspace', 'Low disk space', 'Check free space on the download and media volumes.')]
+    return next((title for match,title,action in checks if match in key), 'Service warning')
+
+
+def health_action(source):
+    key = str(source or '').lower()
+    if 'update' in key: return 'Review System → Updates.'
+    if 'removedseries' in key: return 'Review affected shows in System → Status.'
+    if 'list' in key: return 'Test the list connection and login.'
+    if 'indexer' in key: return 'Test the indexer connection.'
+    if 'root' in key: return 'Check the media mount and permissions.'
+    return 'Open System → Status for affected items.'
 
 
 def duration_seconds(value):
@@ -150,20 +165,55 @@ def duplicate_groups(owners):
                  reclaimable_bytes=None) for key,rows in by_id.items() if len(rows)>1]
 
 
+def codec_label(value):
+    key = re.sub(r'[^a-z0-9]', '', str(value).lower())
+    return {'h264':'H.264','x264':'H.264','avc':'H.264','h265':'HEVC','x265':'HEVC','hevc':'HEVC','av1':'AV1','mpeg2':'MPEG-2','mpeg2video':'MPEG-2','xvid':'MPEG-4','divx':'MPEG-4','mpeg4':'MPEG-4','unknown':'Unknown'}.get(key, str(value))
+
+
+def resolution_label(row):
+    dims = re.fullmatch(r'(\d+)x(\d+)', str(row.get('resolution') or ''))
+    if not dims: return row.get('resolution') or 'Unknown'
+    width, height = map(int, dims.groups())
+    return '4K' if width >= 3000 else '1080p' if width >= 1700 or height > 720 else '720p' if width >= 1200 or height > 576 else 'SD'
+
+
+def audit_view(payload):
+    """Compact view data, also exposed by the JSON API."""
+    storage = payload.get('storage')
+    if not storage: return
+    e = storage['efficiency']; codecs = {}
+    for b in e['breakdown']:
+        c = codecs.setdefault(b['codec'], dict(codec=b['codec'], bytes=0, count=0))
+        c['bytes'] += b['bytes']; c['count'] += b['count']
+    e['codecs'] = sorted(codecs.values(), key=lambda c:c['bytes'], reverse=True)
+    e['candidate_bytes'] = sum(f['bytes'] for f in e['candidates'])
+    e['scenario_saving_bytes'] = sum(f.get('scenario_saving_bytes',0) for f in e['candidates']) if payload.get('target_mbps') else None
+    for f in e['candidates']:
+        f['codec_label'] = codec_label(f['codec']); f['resolution_label'] = resolution_label(f)
+        f['minutes'] = round(f['duration_seconds']/60) if f.get('duration_seconds') else None
+    for group in storage['duplicates']:
+        copies = group['copies']
+        group['reported_bytes'] = sum(c.get('size',c.get('bytes',0)) or 0 for c in copies) or None
+        paths = [str(c.get('path') or '') for c in copies]
+        group['review_label'] = 'Split movie?' if any(re.search(r'(?i)\b(?:cd|disc|part)[ ._-]*[12]\b', p) for p in paths) else 'Multiple files' if any('size' in c for c in copies) else 'Managed twice'
+        for c in copies:
+            c['codec_label'] = codec_label(c['codec']) if c.get('codec') else ''
+
+
 def efficiency_report(files, target_mbps=None):
     # A user-selected target is a storage budget scenario, not a quality-equivalent encode prediction.
     if target_mbps is not None and not 0.5 <= target_mbps <= 100: raise ValueError('Target Mbps must be between 0.5 and 100')
     totals, candidates = {}, []
     for f in files:
-        key=(f['codec'],f['resolution'],f['source'])
+        key=(codec_label(f['codec']), resolution_label(f), f['source'])
         bucket=totals.setdefault(key,dict(codec=key[0],resolution=key[1],source=key[2],count=0,bytes=0))
         bucket['count']+=1;bucket['bytes']+=f['bytes']
         bitrate=f.get('bitrate_mbps');height=f.get('height')
         budget=40 if height and height>1080 else 15 if height and height>720 else 8 if height else None
         reasons=[]
-        if bitrate and budget and bitrate>budget: reasons.append('High total bitrate for resolution; review quality, grain, HDR and audio before converting')
-        if f['bytes']>=20_000_000_000: reasons.append('Large file (20 GB or more)')
-        if not f['duration_seconds'] or not height or f['codec']=='unknown': reasons.append('Incomplete media metadata; savings cannot be assessed reliably')
+        if bitrate and budget and bitrate>budget: reasons.append('High bitrate')
+        if f['bytes']>=20_000_000_000: reasons.append('20+ GB')
+        if not f['duration_seconds'] or not height or f['codec']=='unknown': reasons.append('Missing metadata')
         if reasons:
             row=dict(f,reasons=reasons)
             if target_mbps is not None and f['duration_seconds']:

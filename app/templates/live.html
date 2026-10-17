@@ -69,22 +69,23 @@
 
 </section>
 <section class="panel ops-panel" aria-labelledby="download-title">
-  <div class="section-head"><div><h2 id="download-title">Downloads</h2><p class="muted">Queue and processing status</p></div><span class="muted" data-live-remaining>{{ downloads|length }} in queue · {{ ops_stats.remaining_label }} left</span></div>
-  <div class="download-table-wrap" tabindex="0" role="region" aria-label="Download queue">
-  <table class="download-table"><thead><tr><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Size</th><th scope="col">Time left</th></tr></thead>
+  <div class="section-head"><div><h2 id="download-title">Downloads</h2><p class="muted"><span data-download-client>{{ ops_stats.client_status }} · {{ ops_stats.queue_speed_label }} queue speed</span></p></div><span class="muted" data-live-remaining>{{ downloads|length }} in queue · {{ ops_stats.remaining_label }} left</span></div>
+  {% if request.query_params.get('download_error') %}<p role="alert" class="audit-notice">{{ request.query_params.get('download_error') }}</p>{% endif %}{% if request.query_params.get('download_updated') %}<p role="status">Download updated.</p>{% endif %}<div class="download-table-wrap" tabindex="0" role="region" aria-label="Download queue">
+  <table class="download-table"><thead><tr><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Size</th><th scope="col">Speed / ETA</th>{% if user.is_admin %}<th scope="col">Controls</th>{% endif %}</tr></thead>
   <tbody data-live-downloads>
   {% for q in downloads %}
     <tr>
-      <td class="download-name"><strong>{{ q.display_title or q.title }}</strong><span class="download-source">{{ q.source }}{% if q.quality %} · {{ q.quality }}{% endif %}</span><details class="download-details"><summary>Release details</summary><p>{{ q.title }}</p>{% if q.indexer %}<p>Indexer: {{ q.indexer }}</p>{% endif %}</details>{% if q.message %}<p class="download-warning">{{ q.message }}</p>{% endif %}</td>
+      <td class="download-name"><strong>{{ q.display_title or q.title }}</strong><span class="download-source">{{ q.source }}{% if q.quality %} · {{ q.quality }}{% endif %}</span><details class="download-details"><summary>Release details</summary><p>{{ q.title }}</p>{% if q.indexer %}<p>Indexer: {{ q.indexer }}</p>{% endif %}{% if q.client %}<p>{{ q.client }} · {{ q.category or 'No category' }} · {{ q.priority or 'Normal' }} priority</p>{% endif %}{% if q.size_left_bytes is not none %}<p>{{ q.size_left_bytes|bytes }} remaining</p>{% endif %}</details>{% if q.message %}<p class="download-warning">{{ q.message }}</p>{% endif %}</td>
       <td><span class="download-state">{{ q.status|replace('_',' ') }}</span></td>
       <td class="download-progress">{% if q.progress is not none %}<span>{{ '%.0f'|format(q.progress) }}%</span><progress max="100" value="{{ q.progress }}" aria-label="Progress for {{ q.display_title or q.title }}"></progress>{% else %}<span>Not reported</span>{% endif %}</td>
       <td class="download-number">{% if q.size_gb %}{{ q.size_gb }} GB{% else %}—{% endif %}</td>
-      <td class="download-number">{{ q.timeleft or '—' }}</td>
+      <td class="download-number">{{ q.speed_label or '—' }}<small>{{ q.timeleft or '—' }}</small></td>
+      {% if user.is_admin %}<td>{% if q.controls %}<div class="download-controls"><form method="post" action="/live/downloads/control"><input type="hidden" name="download_id" value="{{ q.download_id }}"><button name="action" value="{{ 'resume' if q.status|lower=='paused' else 'pause' }}" aria-label="{{ 'Resume' if q.status|lower=='paused' else 'Pause' }} {{ q.display_title or q.title }}">{{ 'Resume' if q.status|lower=='paused' else 'Pause' }}</button></form><details><summary>Priority</summary><form method="post" action="/live/downloads/control"><input type="hidden" name="download_id" value="{{ q.download_id }}"><input type="hidden" name="action" value="priority"><label class="sr-only" for="priority-{{ loop.index }}">Priority for {{ q.display_title or q.title }}</label><select name="priority" id="priority-{{ loop.index }}">{% for value,label in [('-1','Low'),('0','Normal'),('1','High')] %}<option value="{{ value }}" {% if q.priority==label %}selected{% endif %}>{{ label }}</option>{% endfor %}</select><button>Set</button></form></details></div>{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}
     </tr>
-  {% else %}<tr><td colspan="5" class="download-empty">Queue is empty.</td></tr>{% endfor %}
+  {% else %}<tr><td colspan="{{ 6 if user.is_admin else 5 }}" class="download-empty">Queue is empty.</td></tr>{% endfor %}
   </tbody></table>
   </div>
 </section>
 </div>
-<script src="/static/live.js?v=20261017-now-table" defer></script>
+<script src="/static/live.js?v=20261017-download-controls" defer></script>
 {% endblock %}

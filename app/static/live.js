@@ -9,6 +9,7 @@
   const bars=document.querySelector('[data-live-bars]');
   const remaining=document.querySelector('[data-live-remaining]');
   const sync=document.querySelector('[data-live-sync]');
+  const clientStatus=document.querySelector('[data-download-client]');
   const isAdmin=page.dataset.admin==='true';
   let timer=null;
   let inFlight=null;
@@ -30,7 +31,7 @@
       s.bandwidth,s.part_decision,s.transcode_decision,s.remote_public_address,s.machine_identifier
     ].join('|'));
     const downloads=(payload.downloads||[]).map(d=>[
-      d.item_key,d.source,d.title,d.display_title,d.status,d.progress,d.message,d.timeleft,d.size_bytes,d.size_left_bytes,d.quality,d.indexer
+      d.item_key,d.source,d.title,d.display_title,d.status,d.progress,d.message,d.timeleft,d.size_bytes,d.size_left_bytes,d.quality,d.indexer,d.speed_label,d.priority,d.controls
     ].join('|'));
     return sessions.concat(downloads).join('~');
   }
@@ -62,6 +63,7 @@
     if(bandwidth) bandwidth.textContent=`${mbps.toFixed(1)} Mb/s`;
     if(summary) summary.textContent=`${active} playing${paused ? ` · ${paused} paused` : ''}${transcodes ? ` · ${playbackTranscodeLabel(transcodes)}` : ''}`;
     if(remaining) remaining.textContent=`${(payload.downloads||[]).length} in queue · ${ops.remaining_label||'0 B'} left`;
+    if(clientStatus) clientStatus.textContent=`${ops.client_status||'Not connected'} · ${ops.queue_speed_label||'—'} queue speed`;
     if(bars){
       bars.innerHTML=(stats.bars||[]).map((h, index)=>
         `<i style="height:${pct(h)}%; animation-delay:-${index*0.19}s"></i>`
@@ -141,16 +143,24 @@
     </article>`;
   }
 
+  function downloadControls(item){
+    if(!isAdmin) return '';
+    if(!item.controls) return '<td><span class="muted">—</span></td>';
+    const paused=text(item.status).toLowerCase()==='paused';
+    const options=[['-1','Low'],['0','Normal'],['1','High']].map(([value,label])=>`<option value="${value}" ${item.priority===label ? 'selected' : ''}>${label}</option>`).join('');
+    return `<td><div class="download-controls"><form method="post" action="/live/downloads/control"><input type="hidden" name="download_id" value="${esc(item.download_id)}"><button name="action" value="${paused ? 'resume' : 'pause'}" aria-label="${paused ? 'Resume' : 'Pause'} ${esc(item.display_title||item.title)}">${paused ? 'Resume' : 'Pause'}</button></form><details><summary>Priority</summary><form method="post" action="/live/downloads/control"><input type="hidden" name="download_id" value="${esc(item.download_id)}"><input type="hidden" name="action" value="priority"><select name="priority" aria-label="Priority for ${esc(item.display_title||item.title)}">${options}</select><button>Set</button></form></details></div></td>`;
+  }
+
   function downloadRow(item){
     const title=item.display_title||item.title||'Unknown title';
     const progress=item.progress==null ? null : pct(item.progress);
     const status=text(item.status||'Unknown').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/_/g,' ');
     return `<tr>
-      <td class="download-name"><strong>${esc(title)}</strong><span class="download-source">${esc(item.source)}${item.quality ? ` · ${esc(item.quality)}` : ''}</span><details class="download-details"><summary>Release details</summary><p>${esc(item.title)}</p>${item.indexer ? `<p>Indexer: ${esc(item.indexer)}</p>` : ''}</details>${item.message ? `<p class="download-warning">${esc(item.message)}</p>` : ''}</td>
+      <td class="download-name"><strong>${esc(title)}</strong><span class="download-source">${esc(item.source)}${item.quality ? ` · ${esc(item.quality)}` : ''}</span><details class="download-details"><summary>Release details</summary><p>${esc(item.title)}</p>${item.indexer ? `<p>Indexer: ${esc(item.indexer)}</p>` : ''}${item.client ? `<p>${esc(item.client)} · ${esc(item.category||'No category')} · ${esc(item.priority||'Normal')} priority</p>` : ''}${item.size_left_bytes != null ? `<p>${esc(gb(item.size_left_bytes))} remaining</p>` : ''}</details>${item.message ? `<p class="download-warning">${esc(item.message)}</p>` : ''}</td>
       <td><span class="download-state">${esc(status)}</span></td>
       <td class="download-progress">${progress==null ? '<span>Not reported</span>' : `<span>${Math.round(progress)}%</span><progress max="100" value="${progress}" aria-label="Progress for ${esc(title)}"></progress>`}</td>
       <td class="download-number">${esc(gb(item.size_bytes))}</td>
-      <td class="download-number">${esc(item.timeleft||'—')}</td>
+      <td class="download-number">${esc(item.speed_label||'—')}<small>${esc(item.timeleft||'—')}</small></td>${downloadControls(item)}
     </tr>`;
   }
 
@@ -172,7 +182,7 @@
     }
     if(downloadsGrid){
       const downloads=payload.downloads||[];
-      downloadsGrid.innerHTML=downloads.length ? downloads.map(downloadRow).join('') : '<tr><td colspan="5" class="download-empty">Queue is empty.</td></tr>';
+      downloadsGrid.innerHTML=downloads.length ? downloads.map(downloadRow).join('') : `<tr><td colspan="${isAdmin ? 6 : 5}" class="download-empty">Queue is empty.</td></tr>`;
     }
     setSyncStatus('Updates automatically', 'ok');
   }

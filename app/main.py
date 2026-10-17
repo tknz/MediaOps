@@ -38,7 +38,7 @@ from .services.local_auth import hash_password, local_auth_configured, local_ple
 from .services.integration_tokens import DEFAULT_HOMEASSISTANT_SCOPES, active_integration_tokens, issue_integration_token, revoke_integration_token
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
-from .services import library_audit
+from .services import library_audit, library_summary, download_controls
 from .integrations import router as integrations_router
 from .services.webhooks import notify_homeassistant
 
@@ -316,7 +316,6 @@ async def scheduled_plex_poll():
 
 async def scheduled_downloads_poll():
     cfg = all_settings()
-    radarr, sonarr = await service_clients()
     queue = []
     if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
         try:
@@ -324,20 +323,24 @@ async def scheduled_downloads_poll():
             queue += await client.background_transcodes()
         except Exception:
             pass
-    if radarr:
-        try:
-            payload = await radarr.queue()
-            queue += [normalise_queue_item('Radarr', row) for row in payload.get('records', [])]
-        except Exception:
-            pass
-    if sonarr:
-        try:
-            payload = await sonarr.queue()
-            queue += [normalise_queue_item('Sonarr', row) for row in payload.get('records', [])]
-        except Exception:
-            pass
+    for kind in ('radarr','sonarr'):
+        for inst in library_service.arr_clients(kind, cfg):
+            try:
+                rows = await library_audit.full_queue(inst['client'])
+                queue += [normalise_queue_item(inst['name'], row) for row in rows]
+            except Exception:
+                # Preserve the last known queue during a temporary source failure.
+                with SessionLocal() as db:
+                    queue += [download_item_payload(r) for r in active_download_rows(db) if r.source == inst['name']]
     with SessionLocal() as db:
         reconcile_download_queue(db, queue)
+        if cfg.get('sabnzbd_url') and cfg.get('sabnzbd_api_key'):
+            try:
+                summary, slots = await download_controls.queue(cfg)
+                report = download_controls.snapshot(summary, slots, library_audit.state(db,'download-client'))
+                library_audit.save(db,'download-client',report)
+            except Exception:
+                pass
 
 
 def _bounded_int(value, default: int, minimum: int, maximum: int) -> int:
@@ -776,6 +779,7 @@ def format_bytes(value):
     return f'{n:.1f} {units[idx]}' if n < 10 else f'{n:.0f} {units[idx]}'
 
 templates.env.filters['bytes'] = format_bytes
+templates.env.filters['server_time'] = format_server_time
 
 
 def api_user_payload(context: AuthContext) -> dict:
@@ -1294,7 +1298,20 @@ def active_download_rows(db: Session) -> list[ActiveDownloadItem]:
 
 
 def active_download_payloads(db: Session) -> list[dict]:
-    return [download_item_payload(row) for row in active_download_rows(db)]
+    rows = download_controls.attach([download_item_payload(row) for row in active_download_rows(db)], library_audit.state(db,'download-client'))
+    for row in rows:
+        row['display_title'] = download_display_title(row['title'])
+        row['size_gb'] = round(row['size_bytes']/1e9,2) if row.get('size_bytes') else None
+        row['speed_label'] = format_bytes(row['speed_bps'])+'/s avg' if row.get('speed_bps') is not None else '—'
+    return rows
+
+
+def download_queue_stats(db):
+    report = library_audit.state(db,'download-client')
+    if not report: return dict(client_status='Not connected', queue_speed_label='—')
+    fresh = (datetime.utcnow()-datetime.fromisoformat(report['checked_at'])).total_seconds()<120
+    return dict(client_status=('Paused' if report.get('paused') else 'Connected') if fresh else 'Stale data',
+        queue_speed_label=format_bytes(report['queue_speed_bps'])+'/s' if fresh else '—', checked_at=report['checked_at'])
 
 
 def ops_stats(downloads: list[dict]) -> dict:
@@ -2081,6 +2098,7 @@ async def admin_page(request: Request, db: Session = Depends(get_db), period: st
         'request_leaders': request_leaders, 'requests': requests, 'spotlight_sessions': spotlight_sessions,
         'unique_shows': unique_shows, 'unique_movies': unique_movies,
         'overview_periods': OVERVIEW_PERIODS, 'overview_period': overview_period,
+        'inventory': await library_summary.summary(db),
     })
 
 
@@ -2120,7 +2138,7 @@ async def live_summary_api(request: Request, db: Session = Depends(get_db)):
         'downloads': downloads,
         'active_bandwidth_kbps': active_kbps,
         'active_streams': len(active),
-        'ops': ops_stats(downloads),
+        'ops': dict(ops_stats(downloads), **download_queue_stats(db)),
     })
 
 
@@ -2281,6 +2299,7 @@ async def admin_overview_api(period: str = 'all', db: Session = Depends(get_db),
     return {
         'user': api_user_payload(context),
         'period': {'key': overview_period['key'], 'label': overview_period['label'], 'days': overview_period['days']},
+        'inventory': await library_summary.summary(db),
         'kpis': {'hours': int(seconds or 0) / 3600, 'sessions': sessions, 'terabytes': int(streamed or 0) / 1e12, 'transcodes': transcodes},
         'leaders': [{'username': r.username, 'sessions': int(r.sessions or 0), 'seconds': int(r.seconds or 0), 'bytes': int(r.bytes or 0)} for r in leaders],
         'request_leaders': [{'requester_name': r.requester_name, 'requests': int(r.requests or 0), 'bytes': int(r.bytes or 0)} for r in request_leaders],
@@ -2297,7 +2316,7 @@ async def live_api(db: Session = Depends(get_db), context: AuthContext = Depends
         'stats': live_stats_from_payloads(sessions),
         'sessions': sessions,
         'downloads': downloads,
-        'ops': ops_stats(downloads),
+        'ops': dict(ops_stats(downloads), **download_queue_stats(db)),
     }
 
 
@@ -2678,10 +2697,28 @@ async def live(request: Request, db: Session = Depends(get_db)):
     live_stats = live_stats_from_payloads(enriched_sessions)
     response = templates.TemplateResponse('live.html', {
         'request': request, 'user': user, 'sessions': enriched_sessions, 'downloads': downloads,
-        'ops_stats': ops_stats(downloads), 'config': cfg, 'live_stats': live_stats,
+        'ops_stats': dict(ops_stats(downloads), **download_queue_stats(db)), 'config': cfg, 'live_stats': live_stats,
     })
     response.headers['Cache-Control'] = 'no-store'
     return response
+
+
+@app.post('/live/downloads/control')
+async def live_download_control(request: Request, download_id: str = Form(...), action: str = Form(...), priority: str = Form('0'), db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user or not user.is_admin: raise HTTPException(403, 'Admin required')
+    try:
+        await download_controls.control(download_id, action, priority)
+    except ValueError as exc:
+        return RedirectResponse('/live?' + urlencode({'download_error': str(exc)}), status_code=303)
+    except Exception:
+        return RedirectResponse('/live?' + urlencode({'download_error':'Client did not confirm the change. Refresh before retrying.'}), status_code=303)
+    try:
+        summary, slots = await download_controls.queue()
+        library_audit.save(db,'download-client',download_controls.snapshot(summary,slots,library_audit.state(db,'download-client')))
+    except Exception:
+        return RedirectResponse('/live?' + urlencode({'download_error':'Change accepted; queue refresh failed. Refresh to see the latest status.'}), status_code=303)
+    return RedirectResponse('/live?download_updated=1', status_code=303)
 
 
 @app.post('/live/terminate')
@@ -2913,20 +2950,25 @@ async def set_library_item_monitoring(
 def library_audit_payload(db, source='all', page=1, target_mbps=None):
     storage = library_audit.state(db, 'storage')
     health = library_audit.state(db, 'health')
-    result = {'storage': None, 'health': health, 'source': source, 'sources': [], 'target_mbps': target_mbps}
+    result = {'page': 1, 'pages': 1, 'candidate_count': 0, 'storage': None, 'health': health, 'source': source, 'sources': [], 'target_mbps': target_mbps}
     if storage:
         files = storage.get('files', [])
-        result['sources'] = sorted({f['source'] for f in files} | {c['source'] for g in storage.get('duplicates', []) for c in g['copies']})
+        result['sources'] = sorted({f['source'] for f in files} | {v for g in storage.get('duplicates', []) for c in g['copies'] for v in c.get('sources',[c['source']])})
         files = [f for f in files if source == 'all' or f['source'] == source]
         efficiency = library_audit.efficiency_report(files, target_mbps)
-        candidates = efficiency['candidates']; pages = max(1,(len(candidates)+49)//50); page=max(1,min(page,pages))
+        candidates = efficiency['candidates']; library_audit.audit_view({'storage': dict(storage, efficiency=efficiency), 'target_mbps': target_mbps}); pages = max(1,(len(candidates)+49)//50); page=max(1,min(page,pages))
         efficiency['candidates'] = candidates[(page-1)*50:page*50]
         result.update(page=page,pages=pages,candidate_count=len(candidates))
         result['storage'] = {k:v for k,v in storage.items() if k not in ('files','efficiency')}
-        result['storage']['duplicates'] = [g for g in storage['duplicates'] if source == 'all' or any(c['source']==source for c in g['copies'])]
+        result['storage']['duplicates'] = [g for g in storage['duplicates'] if source == 'all' or any(source in c.get('sources',[c['source']]) for c in g['copies'])]
         result['storage']['efficiency'] = efficiency
     if health:
         result['health'] = {k:v for k,v in health.items() if k != 'observations'}
+    if health:
+        for service in result['health'].get('services', []):
+            for h in service.get('health', []):
+                h['message'] = library_audit.health_message(h.get('source'), h.get('type'))
+                h['action'] = library_audit.health_action(h.get('source'))
     return result
 
 
@@ -2942,7 +2984,7 @@ def library_audit_api(source: str = 'all', page: int = 1, target_mbps: float | N
 
 
 @app.get('/libraries/audit/report', response_class=HTMLResponse)
-def library_audit_page(request: Request, source: str = 'all', page: int = 1, target_mbps: float | None = None, db: Session = Depends(get_db)):
+def library_audit_page(request: Request, view: str = 'health', source: str = 'all', page: int = 1, target_mbps: float | None = None, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user or not user.is_admin:
         raise HTTPException(403, 'Admin required')
@@ -2950,11 +2992,11 @@ def library_audit_page(request: Request, source: str = 'all', page: int = 1, tar
         payload = library_audit_payload(db, source, page, target_mbps)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
-    return templates.TemplateResponse('library_audit.html', {'request':request, 'user':user, 'payload':payload})
+    return templates.TemplateResponse('library_audit.html', {'request':request, 'user':user, 'payload':payload, 'view': view if view in ('health','duplicates','storage') else 'health'})
 
 
 @app.post('/libraries/audit/run')
-async def library_audit_run(request: Request, audit: str = Form(...), db: Session = Depends(get_db)):
+async def library_audit_run(request: Request, audit: str = Form(...), view: str = Form('health'), db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user or not user.is_admin:
         raise HTTPException(403, 'Admin required')
@@ -2965,7 +3007,7 @@ async def library_audit_run(request: Request, audit: str = Form(...), db: Sessio
     if not scheduler.get_job(job_id):
         scheduler.add_job(scheduled_library_health if audit == 'health' else scheduled_library_storage,
             'date', run_date=datetime.utcnow(), id=job_id, max_instances=1)
-    return RedirectResponse('/libraries/audit/report', status_code=303)
+    return RedirectResponse('/libraries/audit/report?' + urlencode({'view':view if view in ('health','duplicates','storage') else 'health', 'running':audit}), status_code=303)
 
 
 @app.get('/libraries/{section_id}', response_class=HTMLResponse)
