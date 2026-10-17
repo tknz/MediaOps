@@ -38,7 +38,7 @@ from .services.local_auth import hash_password, local_auth_configured, local_ple
 from .services.integration_tokens import DEFAULT_HOMEASSISTANT_SCOPES, active_integration_tokens, issue_integration_token, revoke_integration_token
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
-from .services import library_audit, library_summary, download_controls
+from .services import library_audit, library_summary, download_controls, duplicate_actions
 from .integrations import router as integrations_router
 from .services.webhooks import notify_homeassistant
 
@@ -2993,6 +2993,33 @@ def library_audit_page(request: Request, view: str = 'health', source: str = 'al
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     return templates.TemplateResponse('library_audit.html', {'request':request, 'user':user, 'payload':payload, 'view': view if view in ('health','duplicates','storage') else 'health'})
+
+
+@app.get('/libraries/audit/duplicates/{group_key}/remove', response_class=HTMLResponse)
+async def duplicate_remove_review(group_key: str, copy: str, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    try:
+        review=await duplicate_actions.inspect(db,group_key,copy)
+    except ValueError as exc:
+        return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':str(exc)}),status_code=303)
+    except Exception:
+        return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':'Could not check the live copies. Refresh and try again.'}),status_code=303)
+    return templates.TemplateResponse('duplicate_remove.html',dict(request=request,user=user,review=review,confirmation=duplicate_actions.token(review)))
+
+
+@app.post('/libraries/audit/duplicates/remove')
+async def duplicate_remove(request: Request, confirmation: str = Form(...), confirm: str = Form(''), db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    if confirm!='delete':raise HTTPException(422,'Confirm the selected file deletion')
+    try:
+        await duplicate_actions.remove(db,confirmation,actor=user.username)
+    except ValueError as exc:
+        return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':str(exc)}),status_code=303)
+    except Exception:
+        return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':'Deletion was not confirmed. Refresh the scan before retrying.'}),status_code=303)
+    return RedirectResponse('/libraries/audit/report?view=duplicates&removed=1',status_code=303)
 
 
 @app.post('/libraries/audit/run')

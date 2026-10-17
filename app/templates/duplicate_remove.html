@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="audit-page"><p><a href="/libraries/audit/report?view=duplicates">← Duplicates</a></p><h1>Delete this copy?</h1><h2>{{ review.title }}</h2>
+{% if review.split %}<p class="audit-notice">These may be parts of a split movie. Check the filenames before deleting.</p>{% endif %}<section class="panel"><p class="eyebrow">Delete permanently</p><h3>{{ review.target.resolution }} · {{ review.target.codec }} · {{ review.target.size|bytes }}</h3><p class="file-path">{{ review.target.path }}</p></section>
+<section class="panel"><p class="eyebrow">Keep</p>{% for c in review.keep %}<h3>{{ c.resolution }} · {{ c.codec }} · {{ c.size|bytes }}</h3><p class="file-path">{{ c.path }}</p>{% endfor %}</section>
+<p class="muted">Monitored media may be downloaded again by Arr.</p>
+<form method="post" action="/libraries/audit/duplicates/remove"><input type="hidden" name="confirmation" value="{{ confirmation }}"><label class="delete-confirm"><input type="checkbox" name="confirm" value="delete" required> Delete this file from disk. This cannot be undone.</label><p><button class="duplicate-delete">Delete selected copy</button> <a href="/libraries/audit/report?view=duplicates">Cancel</a></p></form>
+</div>
+{% endblock %}

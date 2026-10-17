@@ -196,8 +196,11 @@ def audit_view(payload):
         group['reported_bytes'] = sum(c.get('size',c.get('bytes',0)) or 0 for c in copies) or None
         paths = [str(c.get('path') or '') for c in copies]
         group['review_label'] = 'Split movie?' if any(re.search(r'(?i)\b(?:cd|disc|part)[ ._-]*[12]\b', p) for p in paths) else 'Multiple files' if any('size' in c for c in copies) else 'Managed twice'
+        from .duplicate_actions import annotate
+        annotate(group)
         for c in copies:
             c['codec_label'] = codec_label(c['codec']) if c.get('codec') else ''
+            c['version_label'] = {'4k':'4K','1080':'1080p','720':'720p','sd':'SD'}.get(str(c.get('resolution','')).lower(),c.get('resolution'))
 
 
 def efficiency_report(files, target_mbps=None):
@@ -290,8 +293,10 @@ async def plex_duplicate_groups(values=None):
                             path=part.get('file')
                             if not path:continue
                             # Same absolute file in All Movies and Kids Movies is one stored reference.
-                            copy=group['paths'].setdefault(path,dict(path=path,sources=[],size=int(part.get('size') or 0),edition=node.get('editionTitle'),codec=media.get('videoCodec'),resolution=media.get('videoResolution')))
+                            copy=group['paths'].setdefault(path,dict(path=path,sources=[],references=[],size=int(part.get('size') or 0),edition=node.get('editionTitle'),codec=media.get('videoCodec'),resolution=media.get('videoResolution')))
                             if library['title'] not in copy['sources']:copy['sources'].append(library['title'])
+                            ref=dict(rating_key=node.get('ratingKey'),media_id=media.get('id'))
+                            if ref not in copy['references']:copy['references'].append(ref)
                 start+=len(nodes)
                 total=int(page.get('totalSize') or 0)
                 if (total and start>=total) or (not total and len(nodes)<250):break

@@ -59,6 +59,7 @@ class JsonServiceClient:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.delete(f"{self.cfg.url.rstrip('/')}/{path.lstrip('/')}", headers=self._headers(), params=params)
             response.raise_for_status()
+            if not response.content: return None
             ctype = response.headers.get('content-type','')
             return response.json() if 'json' in ctype else response.text
 

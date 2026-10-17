@@ -1,0 +1,119 @@
+"""Review and delete one explicitly confirmed Plex media version, preserving the others."""
+import asyncio
+import hashlib
+import re
+from datetime import datetime
+from xml.etree import ElementTree as ET
+from itsdangerous import URLSafeTimedSerializer
+from ..config import settings
+from . import library_audit as audit
+from .clients import PlexClient, ServiceConfig
+from .settings_store import all_settings
+
+lock = asyncio.Lock()
+
+def key(value):
+    return hashlib.sha256(str(value).encode()).hexdigest()[:24]
+
+def annotate(group):
+    group['key'] = key((group['kind'],group['identity']))
+    ranks=[]
+    for copy in group['copies']:
+        copy['key']=key(copy.get('path'))
+        value=str(copy.get('resolution') or '').lower()
+        rank={'4k':2160,'2160':2160,'1080':1080,'1080p':1080,'720':720,'720p':720,'480':480,'sd':480}.get(value)
+        ranks.append(rank)
+    # Resolution is an explicit comparison, not a claim that codec/bytes determine quality.
+    if len(ranks)>1 and all(ranks) and len(set(ranks))>1 and len({c.get('edition') or '' for c in group['copies']})==1 and group.get('review_label')!='Split movie?':
+        lowest=min(ranks)
+        for c,rank in zip(group['copies'],ranks): c['lower_resolution']=rank==lowest
+
+
+def client():
+    cfg=all_settings()
+    if not cfg.get('plex_server_url') or not cfg.get('plex_server_token'): raise ValueError('Plex is not configured')
+    return PlexClient(ServiceConfig(url=cfg['plex_server_url'],token=cfg['plex_server_token']))
+
+async def refresh(db):
+    report=audit.state(db,'storage')
+    if not report: raise ValueError('Run a library scan first')
+    groups, errors, status=await audit.plex_duplicate_groups()
+    if errors: raise ValueError('Plex scan incomplete. Try Scan now after checking the connection.')
+    # Keep Arr inventory groups; refresh only Plex file references.
+    report['duplicates']=[g for g in report['duplicates'] if not str(g['identity']).startswith('plex://')]+groups
+    audit.save(db,'storage',report)
+
+
+def selected(db, group_key, copy_key):
+    report=audit.state(db,'storage') or {}
+    for group in report.get('duplicates',[]):
+        if key((group['kind'],group['identity']))==group_key:
+            chosen=next((c for c in group['copies'] if key(c.get('path'))==copy_key),None)
+            if chosen:return group,chosen
+    raise ValueError('This copy is no longer in the report. Refresh the scan.')
+
+async def inspect(db, group_key, copy_key, refresh_missing=True):
+    group,chosen=selected(db,group_key,copy_key)
+    if not chosen.get('references'):
+        if refresh_missing and str(group['identity']).startswith('plex://'):
+            await refresh(db);return await inspect(db,group_key,copy_key,False)
+        raise ValueError('Use the source library controls for this managed folder.')
+    plex=client(); current={}; copies=[]
+    for copy in group['copies']:
+        found=None
+        for ref in copy.get('references',[]):
+            rating=str(ref.get('rating_key') or '');media_id=str(ref.get('media_id') or '')
+            if not rating.isdigit() or not media_id.isdigit(): continue
+            if rating not in current:
+                current[rating]=ET.fromstring(await plex.get(f'/library/metadata/{rating}',checkFiles=1))
+            node=next((n for n in current[rating] if n.get('guid')==str(group['identity'])),None)
+            if node is None:continue
+            media=next((m for m in node.findall('Media') if m.get('id')==media_id),None)
+            parts=media.findall('Part') if media is not None else []
+            # Deleting a media version can delete all its parts. Offer only a single-file version.
+            if len(parts)!=1 or parts[0].get('file')!=copy['path'] or parts[0].get('exists')=='0':continue
+            found=dict(copy,rating_key=rating,media_id=media_id,size=int(parts[0].get('size') or 0),
+                resolution=media.get('videoResolution'),codec=media.get('videoCodec'),edition=node.get('editionTitle') or '')
+            break
+        if found:copies.append(found)
+    target=next((c for c in copies if c['path']==chosen['path']),None)
+    keep=[c for c in copies if c['path']!=chosen['path']]
+    if not target or not keep:raise ValueError('Both copies must still exist. Refresh the scan.')
+    if any(c['rating_key']==target['rating_key'] and c['media_id']==target['media_id'] for c in keep):
+        raise ValueError('These files belong to one multipart version. Manage it in Plex.')
+    # Fresh playback check, including viewers outside MediaOps history.
+    playing=ET.fromstring(await plex.get('/status/sessions'))
+    for node in playing:
+        paths=[p.get('file') for p in node.findall('.//Part') if p.get('file')]
+        if target['path'] in paths or (not paths and node.get('ratingKey')==target['rating_key']):
+            raise ValueError('This copy is playing now. Wait until playback ends.')
+    return dict(title=group['title'],group_key=group_key,copy_key=copy_key,target=target,keep=keep,split=any(re.search(r'(?i)\b(?:cd|disc|part)[ ._-]*[12]\b',c['path']) for c in copies))
+
+
+def fingerprint(review):
+    return key([(c['path'],c['rating_key'],c['media_id'],c['size'],c.get('edition')) for c in [review['target']]+review['keep']])
+
+def token(review):
+    return URLSafeTimedSerializer(settings.secret_key,salt='duplicate-version-delete').dumps(dict(group=review['group_key'],copy=review['copy_key'],fingerprint=fingerprint(review)))
+
+async def remove(db, confirmation, actor='admin'):
+    data=URLSafeTimedSerializer(settings.secret_key,salt='duplicate-version-delete').loads(confirmation,max_age=600)
+    async with lock:
+        review=await inspect(db,data['group'],data['copy'],False)
+        if fingerprint(review)!=data['fingerprint']:raise ValueError('The files changed. Review the copies again.')
+        target=review['target']
+        operation='duplicate-delete-'+key(confirmation)
+        if audit.state(db,operation):raise ValueError('This deletion was already submitted. Refresh the scan.')
+        event=dict(status='submitted',actor=actor,at=datetime.utcnow().isoformat(),target=target,kept=review['keep'])
+        audit.save(db,operation,event)
+        # Exact version endpoint. Never use DELETE /library/metadata/{ratingKey}, which removes all versions.
+        await client().delete(f"/library/metadata/{target['rating_key']}/media/{target['media_id']}")
+        audit.save(db,operation,dict(event,status='completed'))
+        # Remove the deleted reference from the cached report; playback history remains untouched.
+        report=audit.state(db,'storage')
+        for group in report['duplicates']:
+            if key((group['kind'],group['identity']))==data['group']:
+                group['copies']=[c for c in group['copies'] if c['path']!=target['path']]
+        report['duplicates']=[g for g in report['duplicates'] if len(g['copies'])>1]
+        audit.save(db,'storage',report)
+        return review
