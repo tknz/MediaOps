@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="audit-page"><p><a href="/libraries/audit/report?view=duplicates">← Duplicates</a></p><h1>Delete {{ reviews|length }} copies?</h1><p class="muted">{{ total_bytes|bytes }} in selected files</p>
+<div class="audit-table-wrap panel"><table class="audit-table batch-confirm-table"><thead><tr><th>Title</th><th>Delete</th><th>Keep</th></tr></thead><tbody>{% for r in reviews %}<tr><td><strong>{{ r.title }}</strong>{% if r.split %}<small>May be part of a split movie</small>{% endif %}</td><td>{{ r.target.resolution }} · {{ r.target.codec }} · {{ r.target.size|bytes }}<details><summary>Path</summary><p class="file-path">{{ r.target.path }}</p></details></td><td>{% for c in r.keep %}{{ c.resolution }} · {{ c.codec }} · {{ c.size|bytes }}<details><summary>Path</summary><p class="file-path">{{ c.path }}</p></details>{% endfor %}</td></tr>{% endfor %}</tbody></table></div>
+<form method="post" action="/libraries/audit/duplicates/remove-batch" data-batch-confirm><input type="hidden" name="confirmation" value="{{ confirmation }}"><label class="delete-confirm"><input type="checkbox" name="confirm" value="delete" required> Permanently delete these {{ reviews|length }} files. Keep the versions listed above.</label><p><button class="duplicate-delete">Delete {{ reviews|length }} copies</button> <a href="/libraries/audit/report?view=duplicates">Cancel</a></p><p role="status" class="muted" data-batch-status></p></form>
+</div><script src="/static/library-audit.js?v=20261017-bulk" defer></script>
+{% endblock %}

@@ -52,13 +52,13 @@ def selected(db, group_key, copy_key):
             if chosen:return group,chosen
     raise ValueError('This copy is no longer in the report. Refresh the scan.')
 
-async def inspect(db, group_key, copy_key, refresh_missing=True):
+async def inspect(db, group_key, copy_key, refresh_missing=True, *, remove_paths=(), plex=None, metadata=None, playing=None):
     group,chosen=selected(db,group_key,copy_key)
     if not chosen.get('references'):
         if refresh_missing and str(group['identity']).startswith('plex://'):
-            await refresh(db);return await inspect(db,group_key,copy_key,False)
+            await refresh(db);return await inspect(db,group_key,copy_key,False,remove_paths=remove_paths,plex=plex,metadata=metadata,playing=playing)
         raise ValueError('Use the source library controls for this managed folder.')
-    plex=client(); current={}; copies=[]
+    plex=plex or client(); current=metadata if metadata is not None else {}; copies=[]
     for copy in group['copies']:
         found=None
         for ref in copy.get('references',[]):
@@ -77,43 +77,98 @@ async def inspect(db, group_key, copy_key, refresh_missing=True):
             break
         if found:copies.append(found)
     target=next((c for c in copies if c['path']==chosen['path']),None)
-    keep=[c for c in copies if c['path']!=chosen['path']]
-    if not target or not keep:raise ValueError('Both copies must still exist. Refresh the scan.')
+    keep=[c for c in copies if c['path']!=chosen['path'] and c['path'] not in remove_paths]
+    if not target:raise ValueError('The selected copy is no longer available. Refresh the scan.')
+    if not keep:raise ValueError('Keep at least one existing copy of '+group['title']+'.')
     if any(c['rating_key']==target['rating_key'] and c['media_id']==target['media_id'] for c in keep):
         raise ValueError('These files belong to one multipart version. Manage it in Plex.')
     # Fresh playback check, including viewers outside MediaOps history.
-    playing=ET.fromstring(await plex.get('/status/sessions'))
+    if playing is None: playing=ET.fromstring(await plex.get('/status/sessions'))
     for node in playing:
         paths=[p.get('file') for p in node.findall('.//Part') if p.get('file')]
         if target['path'] in paths or (not paths and node.get('ratingKey')==target['rating_key']):
             raise ValueError('This copy is playing now. Wait until playback ends.')
-    return dict(title=group['title'],group_key=group_key,copy_key=copy_key,target=target,keep=keep,split=any(re.search(r'(?i)\b(?:cd|disc|part)[ ._-]*[12]\b',c['path']) for c in copies))
+    return dict(title=group['title'],group_key=group_key,copy_key=copy_key,target=target,keep=keep,deleting=sorted(remove_paths),split=any(re.search(r'(?i)\b(?:cd|disc|part)[ ._-]*[12]\b',c['path']) for c in copies))
 
 
 def fingerprint(review):
     return key([(c['path'],c['rating_key'],c['media_id'],c['size'],c.get('edition')) for c in [review['target']]+review['keep']])
 
 def token(review):
-    return URLSafeTimedSerializer(settings.secret_key,salt='duplicate-version-delete').dumps(dict(group=review['group_key'],copy=review['copy_key'],fingerprint=fingerprint(review)))
+    return URLSafeTimedSerializer(settings.secret_key,salt='duplicate-version-delete').dumps(dict(group=review['group_key'],copy=review['copy_key'],fingerprint=fingerprint(review),deleting=review.get('deleting',[])))
+
+async def execute(db, data, review, confirmation, actor, plex=None):
+    target=review['target']
+    operation='duplicate-delete-'+key(confirmation)
+    if audit.state(db,operation):raise ValueError('This deletion was already submitted. Refresh the scan.')
+    event=dict(status='submitted',actor=actor,at=datetime.utcnow().isoformat(),target=target,kept=review['keep'])
+    audit.save(db,operation,event)
+    # Exact version endpoint. Never use DELETE /library/metadata/{ratingKey}, which removes all versions.
+    await (plex or client()).delete(f"/library/metadata/{target['rating_key']}/media/{target['media_id']}")
+    audit.save(db,operation,dict(event,status='completed'))
+    # Remove the deleted reference from the cached report; playback history remains untouched.
+    report=audit.state(db,'storage')
+    for group in report['duplicates']:
+        if key((group['kind'],group['identity']))==data['group']:
+            group['copies']=[c for c in group['copies'] if c['path']!=target['path']]
+    report['duplicates']=[g for g in report['duplicates'] if len(g['copies'])>1]
+    audit.save(db,'storage',report)
+    return review
 
 async def remove(db, confirmation, actor='admin'):
     data=URLSafeTimedSerializer(settings.secret_key,salt='duplicate-version-delete').loads(confirmation,max_age=600)
     async with lock:
-        review=await inspect(db,data['group'],data['copy'],False)
+        plex=client()
+        review=await inspect(db,data['group'],data['copy'],False,remove_paths=data.get('deleting',[]),plex=plex)
         if fingerprint(review)!=data['fingerprint']:raise ValueError('The files changed. Review the copies again.')
-        target=review['target']
-        operation='duplicate-delete-'+key(confirmation)
-        if audit.state(db,operation):raise ValueError('This deletion was already submitted. Refresh the scan.')
-        event=dict(status='submitted',actor=actor,at=datetime.utcnow().isoformat(),target=target,kept=review['keep'])
-        audit.save(db,operation,event)
-        # Exact version endpoint. Never use DELETE /library/metadata/{ratingKey}, which removes all versions.
-        await client().delete(f"/library/metadata/{target['rating_key']}/media/{target['media_id']}")
-        audit.save(db,operation,dict(event,status='completed'))
-        # Remove the deleted reference from the cached report; playback history remains untouched.
-        report=audit.state(db,'storage')
-        for group in report['duplicates']:
-            if key((group['kind'],group['identity']))==data['group']:
-                group['copies']=[c for c in group['copies'] if c['path']!=target['path']]
-        report['duplicates']=[g for g in report['duplicates'] if len(g['copies'])>1]
-        audit.save(db,'storage',report)
-        return review
+        return await execute(db,data,review,confirmation,actor,plex=plex)
+
+
+async def review_many(db, selections):
+    selections=list(dict.fromkeys(selections))
+    if not selections:raise ValueError('Select copies to delete first.')
+    if len(selections)>200:raise ValueError('Select at most 200 copies per batch.')
+    planned={}; missing=False
+    for group_key,copy_key in selections:
+        group,copy=selected(db,group_key,copy_key)
+        if not str(group['identity']).startswith('plex://'):raise ValueError('Manage Arr folders in Libraries.')
+        planned.setdefault(group_key,set()).add(copy['path'])
+        missing=missing or not copy.get('references')
+    if missing:await refresh(db)
+    plex=client(); playing=ET.fromstring(await plex.get('/status/sessions')); metadata={}; reviews=[]
+    for group_key,copy_key in selections:
+        reviews.append(await inspect(db,group_key,copy_key,False,remove_paths=planned[group_key],plex=plex,metadata=metadata,playing=playing))
+    return reviews
+
+
+def batch_token(reviews):
+    return URLSafeTimedSerializer(settings.secret_key,salt='duplicate-batch-delete').dumps(dict(operations=[token(review) for review in reviews]))
+
+class BatchStopped(ValueError):
+    def __init__(self, completed):
+        super().__init__(f'{completed} copies deleted. Batch stopped; refresh the scan before retrying.')
+        self.completed=completed
+
+async def remove_many(db, confirmation, actor='admin'):
+    payload=URLSafeTimedSerializer(settings.secret_key,salt='duplicate-batch-delete').loads(confirmation,max_age=600)
+    operations=payload['operations']
+    if not operations or len(operations)>200 or len(set(operations))!=len(operations):raise ValueError('Invalid batch.')
+    serializer=URLSafeTimedSerializer(settings.secret_key,salt='duplicate-version-delete')
+    decoded=[serializer.loads(value,max_age=600) for value in operations]
+    async with lock:
+        # Validate the whole batch before the first write. Recheck each file again just before deletion.
+        plex=client(); playing=ET.fromstring(await plex.get('/status/sessions')); metadata={}
+        for value,data in zip(operations,decoded):
+            if audit.state(db,'duplicate-delete-'+key(value)):raise ValueError('This batch was already submitted. Refresh the scan.')
+            review=await inspect(db,data['group'],data['copy'],False,remove_paths=data.get('deleting',[]),plex=plex,metadata=metadata,playing=playing)
+            if fingerprint(review)!=data['fingerprint']:raise ValueError('The files changed. Review the batch again.')
+        completed=0
+        for value,data in zip(operations,decoded):
+            try:
+                review=await inspect(db,data['group'],data['copy'],False,remove_paths=data.get('deleting',[]),plex=plex)
+                if fingerprint(review)!=data['fingerprint']:raise ValueError('Files changed')
+                await execute(db,data,review,value,actor,plex=plex)
+            except Exception as exc:
+                raise BatchStopped(completed) from exc
+            completed+=1
+        return completed

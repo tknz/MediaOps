@@ -111,7 +111,7 @@ async def arr_summary(values):
 
 
 def fresh(cached):
-    return bool(cached and cached.get('schema_version') == SCHEMA_VERSION and datetime.utcnow()-datetime.fromisoformat(cached['checked_at']) < timedelta(minutes=10))
+    return bool(cached and cached.get('schema_version') == SCHEMA_VERSION and not cached.get('refresh_requested') and datetime.utcnow()-datetime.fromisoformat(cached['checked_at']) < timedelta(minutes=10))
 
 async def summary(db, values=None, *, refresh=False):
     cached = audit.state(db, 'inventory-summary')

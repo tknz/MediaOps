@@ -54,4 +54,24 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(api.status_code,200,api.text);self.assertEqual(api.json()['inventory'],inventory)
             self.assertEqual(api.json()['period']['key'],'30d')
 
+    def test_bulk_duplicates_render_review_and_require_admin_confirmation(self):
+        from app.services import duplicate_actions as d
+        group=dict(kind='movie',identity='plex://movie/test',title='Movie',copies=[dict(source='Movies',path='/low.mkv',size=100,codec='h264',resolution='1080'),dict(source='Movies',path='/high.mkv',size=400,codec='hevc',resolution='4k')])
+        save(self.db,'storage',dict(files=[],duplicates=[group],checked_at=datetime.utcnow().isoformat(),errors=[],complete=True))
+        with patch.object(main,'current_user',return_value=self.user):
+            html=self.client.get('/libraries/audit/report?view=duplicates')
+            self.assertEqual(html.status_code,200,html.text);self.assertIn('duplicate-table',html.text);self.assertEqual(html.text.count('data-delete-copy'),2)
+            self.assertIn('Select lower resolution',html.text)
+            selected=[(d.key(('movie',group['identity'])),d.key('/low.mkv'))]
+            review=dict(title='Movie',group_key=selected[0][0],copy_key=selected[0][1],target=dict(path='/low.mkv',size=100,rating_key='1',media_id='10',resolution='1080',codec='h264'),keep=[dict(path='/high.mkv',size=400,rating_key='1',media_id='11',resolution='4k',codec='hevc')])
+            with patch.object(d,'review_many',AsyncMock(return_value=[review])) as inspect,patch.object(d,'remove_many',AsyncMock()) as remove:
+                r=self.client.post('/libraries/audit/duplicates/review',data={'copy:'+':'.join(selected[0]):'delete'},headers={'Origin':'http://testserver'})
+                self.assertEqual(r.status_code,200,r.text);self.assertIn('Delete 1 copies?',r.text);inspect.assert_awaited_once_with(self.db,selected);remove.assert_not_awaited()
+            with patch.object(d,'remove_many',AsyncMock()) as remove:
+                r=self.client.post('/libraries/audit/duplicates/remove-batch',data={'confirmation':'x'},headers={'Origin':'http://testserver'})
+                self.assertEqual(r.status_code,422);remove.assert_not_awaited()
+        with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)),patch.object(d,'remove_many',AsyncMock()) as remove:
+            r=self.client.post('/libraries/audit/duplicates/remove-batch',data={'confirmation':'x','confirm':'delete'},headers={'Origin':'http://testserver'})
+            self.assertEqual(r.status_code,403);remove.assert_not_awaited()
+
 if __name__=='__main__':unittest.main()

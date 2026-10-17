@@ -3014,6 +3014,46 @@ async def duplicate_remove_review(group_key: str, copy: str, request: Request, d
     return templates.TemplateResponse('duplicate_remove.html',dict(request=request,user=user,review=review,confirmation=duplicate_actions.token(review)))
 
 
+@app.post('/libraries/audit/duplicates/review', response_class=HTMLResponse)
+async def duplicate_batch_review(request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    form=await request.form(); selections=[]
+    for name,value in form.multi_items():
+        if str(name).startswith('copy:') and value=='delete':
+            parts=str(name).split(':')
+            if len(parts)!=3:raise HTTPException(422,'Invalid selection')
+            selections.append((parts[1],parts[2]))
+    try:
+        reviews=await duplicate_actions.review_many(db,selections)
+    except Exception as exc:
+        message=str(exc) if isinstance(exc,ValueError) else 'Could not check the live copies. Try again.'
+        return templates.TemplateResponse('library_audit.html',dict(request=request,user=user,payload=library_audit_payload(db,form.get('source','all')),view='duplicates',bulk_error=message,selected_deletions={':'.join(s) for s in selections}),status_code=422)
+    return templates.TemplateResponse('duplicate_batch.html',dict(request=request,user=user,reviews=reviews,total_bytes=sum(r['target']['size'] for r in reviews),confirmation=duplicate_actions.batch_token(reviews)))
+
+
+def refresh_inventory_after_delete(db):
+    cached=library_audit.state(db,'inventory-summary')
+    if cached:library_audit.save(db,'inventory-summary',dict(cached,refresh_requested=True))
+    if scheduler.running:
+        scheduler.add_job(scheduled_library_inventory,'date',run_date=datetime.utcnow(),id='inventory-after-delete',replace_existing=True)
+
+
+@app.post('/libraries/audit/duplicates/remove-batch')
+async def duplicate_batch_remove(request: Request, confirmation: str = Form(...), confirm: str = Form(''), db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    if confirm!='delete':raise HTTPException(422,'Confirm the batch deletion')
+    try:
+        count=await duplicate_actions.remove_many(db,confirmation,actor=user.username)
+    except Exception as exc:
+        refresh_inventory_after_delete(db)
+        message=str(exc) if isinstance(exc,ValueError) else 'Batch not confirmed. Refresh the scan before retrying.'
+        return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':message}),status_code=303)
+    refresh_inventory_after_delete(db)
+    return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','removed':count}),status_code=303)
+
+
 @app.post('/libraries/audit/duplicates/remove')
 async def duplicate_remove(request: Request, confirmation: str = Form(...), confirm: str = Form(''), db: Session = Depends(get_db)):
     user=current_user(request,db)
@@ -3025,6 +3065,7 @@ async def duplicate_remove(request: Request, confirmation: str = Form(...), conf
         return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':str(exc)}),status_code=303)
     except Exception:
         return RedirectResponse('/libraries/audit/report?'+urlencode({'view':'duplicates','error':'Deletion was not confirmed. Refresh the scan before retrying.'}),status_code=303)
+    refresh_inventory_after_delete(db)
     return RedirectResponse('/libraries/audit/report?view=duplicates&removed=1',status_code=303)
 
 
