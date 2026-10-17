@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Library audits</h1><p><a href="/libraries">Libraries</a> · <a href="/libraries?preset=tv-cleanup">TV cleanup</a></p>
+<p>Health checks every 15 minutes; duplicate and efficiency scans weekly. Scans read service metadata and retry transient GET failures once. They never delete files, dismiss activity, force imports, change service settings or transcode.</p>
+<form method="post" action="/libraries/audit/run"><button name="audit" value="health">Check health now</button> <button name="audit" value="storage">Scan duplicates and efficiency now</button></form>
+<p>Manual scans run in the background. Reload to see completion; the previous report remains visible until the next scan finishes.</p>
+<section class="panel"><h2>Service health</h2>
+{% if payload.health %}<p>Checked {{ payload.health.checked_at }} UTC · {{ payload.health.issue_count }} actionable findings</p>
+{% for service in payload.health.services %}<h3>{{ service.name }}</h3>{% if not service.ok %}<p>Unavailable: {{ service.error }}</p>{% else %}<p>{{ service.queue_count }} queue entries</p>
+{% for h in service.health %}<p>{{ h.type }}: {{ h.message }}</p>{% endfor %}
+{% for f in service.findings %}<p><strong>{{ f.title }} — {{ f.category }}</strong>: {{ f.detail }} {{ f.action }}</p>{% endfor %}
+{% endif %}{% endfor %}{% else %}<p>No health report yet. Run the first check above.</p>{% endif %}</section>
+{% if payload.storage %}{% set s=payload.storage %}{% set e=s.efficiency %}
+<p>Storage scan {{ s.checked_at }} UTC · {{ 'Complete metadata scan' if s.complete else 'PARTIAL scan; totals exclude unavailable data' }}. {{ s.limitations }}</p>
+{% for error in s.errors %}<p>{{ error.source }}: {{ error.error }}{% if error.title %} ({{ error.title }}){% endif %}</p>{% endfor %}
+<form method="get"><label>Source <select name="source"><option value="all">All sources</option>{% for v in payload.sources %}<option {% if payload.source==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+<label>Optional total output budget (Mbps) <input type="number" min="0.5" max="100" step="0.5" name="target_mbps" value="{{ payload.target_mbps or 8 }}"></label><button>Apply storage scenario</button></form>
+<section class="panel"><h2>Duplicate candidates</h2><p>{{ s.duplicates|length }} groups. Reclaimable storage is unknown until file hashes, hardlinks and editions are checked. No automated deletion.</p>
+{% for g in s.duplicates %}<h3>{{ g.title }} ({{ g.kind }} {{ g.identity }})</h3><p>{{ g.evidence }}</p><ul>{% for c in g.copies %}<li>{{ c.source }}: {{ c.path }}{% if c.edition is defined %} · {{ c.edition or 'no edition tag' }} · {{ c.codec }} · {{ c.resolution }}{% endif %}</li>{% endfor %}</ul>{% endfor %}</section>
+<section class="panel"><h2>Storage efficiency across all codecs</h2><p>{{ e.file_count }} files · {{ e.total_bytes|bytes }} reported file bytes. Hardlinks may inflate reported bytes. {{ e.limitations }}</p>
+<table><thead><tr><th>Codec</th><th>Resolution</th><th>Source</th><th>Files</th><th>Bytes</th></tr></thead><tbody>{% for b in e.breakdown %}<tr><td>{{ b.codec }}</td><td>{{ b.resolution }}</td><td>{{ b.source }}</td><td>{{ b.count }}</td><td>{{ b.bytes|bytes }}</td></tr>{% endfor %}</tbody></table>
+<h3>{{ payload.candidate_count }} review candidates · page {{ payload.page }}/{{ payload.pages }}</h3>
+<table class="media-table"><thead><tr><th>Title / path</th><th>Source</th><th>Size</th><th>Codec / resolution / HDR</th><th>Total bitrate</th><th>Duration</th><th>Reason</th><th>Scenario saving</th></tr></thead><tbody>
+{% for f in e.candidates %}<tr><td>{{ f.title }}<small>{{ f.path }}</small></td><td>{{ f.source }}</td><td>{{ f.size_label }}</td><td>{{ f.codec }} / {{ f.resolution }} / {{ f.hdr }}<small>{{ f.audio_codec }} · {{ f.audio_streams }} audio streams · {{ f.bit_depth }} bit</small></td><td>{{ f.bitrate_mbps or 'unknown' }} Mbps</td><td>{{ f.duration_seconds or 'unknown' }} seconds</td><td>{{ f.reasons|join('; ') }}</td><td>{% if f.scenario_saving_bytes is defined %}{{ f.scenario_saving_bytes|bytes }} at {{ f.scenario_target_mbps }} Mbps{% else %}Not estimated{% endif %}</td></tr>{% endfor %}</tbody></table>
+{% if payload.page>1 %}<a href="?source={{ payload.source|urlencode }}&page={{ payload.page-1 }}{% if payload.target_mbps %}&target_mbps={{ payload.target_mbps }}{% endif %}">Previous</a>{% endif %}
+{% if payload.page<payload.pages %}<a href="?source={{ payload.source|urlencode }}&page={{ payload.page+1 }}{% if payload.target_mbps %}&target_mbps={{ payload.target_mbps }}{% endif %}">Next</a>{% endif %}
+</section>{% else %}<p>No storage report yet. Run the first scan above.</p>{% endif %}
+{% endblock %}

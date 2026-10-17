@@ -57,7 +57,7 @@
   function actionButtons(item, label) {
     if (!state.user || !state.user.is_admin) return '';
     const key = `${item.kind}:${item.source_index}:${item.id}`;
-    const disabled = busyAction === key ? ' disabled' : '';
+    const disabled = busyAction === key || (item.active_viewers || []).length ? ' disabled' : '';
     const monitorLabel = item.monitored ? 'Stop monitoring' : 'Start monitoring';
     return `
       <div class="row-actions">
@@ -137,9 +137,18 @@
             <option value="all"${filters.source === 'all' ? ' selected' : ''}>All sources</option>
             ${sources.map((source) => `<option value="${esc(source)}"${filters.source === source ? ' selected' : ''}>${esc(source)}</option>`).join('')}
           </select></label>
+          <input type="hidden" name="preset" value="${esc(filters.preset || '')}">
+          <label>Inactivity<select name="months">${[6,12,24].map(v => `<option value="${v}"${Number(filters.months) === v ? ' selected' : ''}>${v} months</option>`).join('')}</select></label>
+          <label>Or before (UTC)<input type="date" name="before" value="${esc(filters.before || '')}"></label>
+          <label>History<select name="history">${[['all','All'],['recorded','Recorded before cutoff'],['unknown','No recorded history'],['include','Before cutoff plus no history'],['ambiguous','Ambiguous identity']].map(([v,t]) => `<option value="${v}"${filters.history === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+          <label>Playback scope<select name="viewer"><option value="">ALL viewers</option>${(state.viewers || []).map(v => `<option${filters.viewer === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+          <label>Sort<select name="sort">${[['size','Size'],['last_watched','Last watched'],['title','Title']].map(([v,t]) => `<option value="${v}"${filters.sort === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+          <label>Direction<select name="direction">${['asc','desc'].map(v => `<option${filters.direction === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
+          <input type="hidden" name="page_size" value="${esc(filters.page_size || 50)}">
           <button class="mini" type="submit">Search</button>
           ${(filters.q || filters.kind !== 'all' || filters.source !== 'all') ? '<button class="mini" type="button" data-action="clear-filters">Clear</button>' : ''}
         </form>
+        <p>${esc(state.coverage)} ${filters.viewer ? `Scope: ONLY ${esc(filters.viewer)}; other viewers may have watched recently.` : 'Scope: ALL viewers.'}</p>
         ${compact ? '' : mediaTable()}
       </section>
     `;
@@ -153,13 +162,15 @@
         <td>${typeLabel(item)}</td>
         <td>${esc(item.source)}</td>
         <td>${esc(item.size_label)}</td>
-        <td>${esc(item.last_watched_label)}<small>${esc(item.plays)} plays · ${esc(item.watch_hours)}h</small></td>
+        <td>${esc(item.last_watched_at || item.history_status)}<small>${esc(item.last_watched_by || "—")} · ${esc(item.plays)} playback sessions · ${esc(item.watch_hours)}h</small>${(item.active_viewers || []).length ? `<b>Playing now: ${esc(item.active_viewers.join(", "))}</b>` : ""}</td>
         <td>${item.monitored ? 'Monitored' : '<span class="muted-cell">Not monitored</span>'}${item.quality ? `<small>${esc(item.quality)}</small>` : ''}</td>
         <td class="path-cell">${esc(item.path || '-')}</td>
         <td>${actionButtons(item)}</td>
       </tr>
     `).join('');
     return `
+      <p>${esc(state.total_count)} results · ${esc(state.total_bytes_label)} · cutoff ${esc(state.cutoff)} UTC · Page ${esc(state.page)}/${esc(state.pages)}</p>
+      ${state.previous_url ? `<a href="${esc(state.previous_url)}">Previous</a>` : ''} ${state.next_url ? `<a href="${esc(state.next_url)}">Next</a>` : ''}
       <table class="media-table">
         <thead><tr><th>Title</th><th>Type</th><th>Source</th><th>Size</th><th>Watched</th><th>Status</th><th>Path</th><th></th></tr></thead>
         <tbody>${rows || '<tr><td colspan="8">No media found.</td></tr>'}</tbody>
@@ -267,20 +278,20 @@
     const libs = state.libraries || [];
     const errors = state.errors || [];
     return `
-      <section class="cinema-hero library-hero"><div><p class="eyebrow">${esc(state.server_label || 'Media server')}</p><h1>Libraries</h1><p class="muted">Storage, watch history, and cleanup from media services.</p></div></section>
+      <section class="cinema-hero library-hero"><div><p class="eyebrow">${esc(state.server_label || 'Media server')}</p><h1>Libraries</h1><a href="/libraries/audit/report">Duplicates, efficiency and health</a><p class="muted">Storage, watch history, and cleanup from media services.</p></div></section>
       <section class="stats library-stats">
         <article><span>Movies</span><b>${esc(stats.movies_count || 0)}</b><small>${esc(stats.movies_size_label || '0 B')}</small></article>
         <article><span>TV shows</span><b>${esc(stats.series_count || 0)}</b><small>${esc(stats.series_size_label || '0 B')}</small></article>
         <article><span>Total indexed</span><b>${esc(stats.total_size_label || '0 B')}</b><small>Radarr + Sonarr</small></article>
       </section>
       <section class="media-decision-board">
-        <div class="panel cleanup-panel hero-cleanup"><div class="section-head"><div><p class="eyebrow">Cleanup candidates</p><h2>Big and unwatched</h2></div></div><div class="decision-grid primary">${(stats.never_watched || []).slice(0, 4).map((item) => mediaCard(item, 'No watches found.')).join('') || '<p class="muted">Nothing obvious here.</p>'}</div></div>
-        <div class="panel cleanup-panel"><div class="section-head"><div><p class="eyebrow">Stale storage</p><h2>Large and not watched lately</h2></div></div><div class="decision-list">${decisionList(stats.stale_large, 'No stale large items.', (item) => item.size_label)}</div></div>
+        <div class="panel cleanup-panel hero-cleanup"><div class="section-head"><div><p class="eyebrow">Cleanup candidates</p><h2>No recorded history</h2></div></div><div class="decision-grid primary">${(stats.never_watched || []).slice(0, 4).map((item) => mediaCard(item, 'No recorded history; this does not prove never watched.')).join('') || '<p class="muted">Nothing obvious here.</p>'}</div></div>
+        <div class="panel cleanup-panel"><div class="section-head"><div><p class="eyebrow">Stale storage</p><h2>Large and not watched lately</h2><a href="/libraries?preset=tv-cleanup">Full TV cleanup view</a></div></div><div class="decision-list">${decisionList(stats.stale_large, 'No stale large items.', (item) => item.size_label)}</div></div>
         <div class="panel cleanup-panel"><div class="section-head"><div><p class="eyebrow">Recently used</p><h2>Last watched</h2></div></div><div class="decision-list">${decisionList(stats.recently_watched, 'No watch data yet.', (item) => item.last_watched_label)}</div></div>
       </section>
       <section class="grid two library-top-grid compact-storage-grid">
         <div class="panel"><div class="section-head"><div><p class="eyebrow">Largest movies</p><h2>Movies by size</h2></div></div><div class="size-list">${sizeList(stats.movie_top, 'No movie data.', 'movie')}</div></div>
-        <div class="panel"><div class="section-head"><div><p class="eyebrow">Largest shows</p><h2>TV by size</h2></div></div><div class="size-list">${sizeList(stats.series_top, 'No TV data.', 'series')}</div></div>
+        <div class="panel"><div class="section-head"><div><p class="eyebrow">Largest shows</p><h2>TV by size</h2><a href="/libraries?preset=tv-cleanup">TV cleanup: older than two years</a></div></div><div class="size-list">${sizeList(stats.series_top, 'No TV data.', 'series')}</div></div>
       </section>
       ${libs.length ? `<section class="panel plex-section-panel"><div class="section-head"><div><p class="eyebrow">Plex sections</p><h2>Libraries</h2></div></div><div class="plex-section-row">${libs.map((lib) => `<a href="/libraries/${encodeURIComponent(lib.key)}"><b>${esc(lib.title)}</b><span>${esc(lib.count)} items · ${esc(lib.type)}</span></a>`).join('')}</div></section>` : ''}
       ${filterForm('Search library', false)}
@@ -302,23 +313,15 @@
 
   function nextFilters(form) {
     const data = new FormData(form);
-    return {
-      q: String(data.get('q') || ''),
-      kind: String(data.get('kind') || 'all'),
-      source: String(data.get('source') || 'all'),
-    };
+    return Object.fromEntries(data.entries());
   }
 
   async function loadData(filters, options) {
-    const next = {
-      q: filters && filters.q ? filters.q : '',
-      kind: filters && filters.kind ? filters.kind : 'all',
-      source: filters && filters.source ? filters.source : 'all',
-    };
+    const next = { ...filters };
     try {
       state = await api.get('/api/libraries', next);
       state.filters = state.filters || next;
-      window.history.replaceState(null, '', `/libraries${api.query(next)}`);
+      window.history.replaceState(null, '', `/libraries${api.query(state.filters)}`);
       render();
     } catch (error) {
       if (options && options.keepFallback) {
@@ -369,5 +372,4 @@
   });
 
   render();
-  loadData(state.filters, { keepFallback: true });
 })();

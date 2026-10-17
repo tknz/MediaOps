@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import calendar
+import unicodedata
+from urllib.parse import urlencode
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, any_, bindparam, Integer
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
-from ..models import PlexSession
+from ..models import PlexSession, ActivePlexSession, PlexLibraryItem
 from .clients import PlexClient, RadarrClient, ServiceConfig, SonarrClient
 from .settings_store import all_settings
 
@@ -76,6 +80,8 @@ def normalise_movie(row: dict[str, Any], source: str, index: int) -> dict[str, A
     return {
         'kind': 'movie', 'id': row.get('id'), 'title': row.get('title') or 'Untitled movie',
         'year': row.get('year'), 'source': source, 'source_index': index,
+        'tmdb_id': row.get('tmdbId'), 'tvdb_id': row.get('tvdbId'),
+        'episode_count': (row.get('statistics') or {}).get('episodeFileCount', 0),
         'path': row.get('path'), 'size': size, 'size_label': format_bytes(size),
         'available': bool(row.get('hasFile')), 'monitored': bool(row.get('monitored')),
         'quality': ((((row.get('movieFile') or {}).get('quality') or {}).get('quality') or {}).get('name')),
@@ -91,6 +97,8 @@ def normalise_series(row: dict[str, Any], source: str, index: int) -> dict[str, 
     return {
         'kind': 'series', 'id': row.get('id'), 'title': row.get('title') or 'Untitled series',
         'year': row.get('year'), 'source': source, 'source_index': index,
+        'tmdb_id': row.get('tmdbId'), 'tvdb_id': row.get('tvdbId'),
+        'episode_count': (row.get('statistics') or {}).get('episodeFileCount', 0),
         'path': row.get('path'), 'size': size, 'size_label': format_bytes(size),
         'available': episodes, 'monitored': bool(row.get('monitored')),
         'quality': f'{episodes}/{total} episodes' if total else f'{episodes} episodes',
@@ -120,6 +128,8 @@ def session_media_kind(row: PlexSession) -> str:
     if media_type in {'movie', 'film'}:
         return 'movie'
     if media_type in {'episode', 'show', 'season', 'tv'}:
+        return 'show'
+    if row.grandparent_title or getattr(row, 'grandparent_rating_key', None):
         return 'show'
     title = row.title or ''
     return 'show' if ' - ' in title else 'movie'
@@ -151,35 +161,112 @@ def inv_watch_key(item: dict[str, Any]) -> tuple[str, str]:
     return ('show' if item.get('kind') == 'series' else 'movie', title)
 
 
-def enrich_inventory_usage(db: Session, inventory: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalized_title(value: str) -> str:
+    return ' '.join(unicodedata.normalize('NFKC', value or '').casefold().split())
+
+
+def history_index(db: Session, inventory: list[dict]):
+    titles, keys = {}, {}
+    for i, item in enumerate(inventory):
+        titles.setdefault(('show' if item['kind'] == 'series' else 'movie', normalized_title(item['title'])), []).append(i)
+    # Plex catalogue key is scoped to this server. Link only a unique title/year identity.
+    for row in db.scalars(select(PlexLibraryItem)):
+        name = normalized_title(row.title)
+        candidates = titles.get((row.media_type, name), [])
+        if row.year and any(inventory[i].get('year') and inventory[i]['year'] != row.year for i in candidates):
+            keys[('ambiguous', row.media_type, name)] = True
+        keys[(row.media_type, str(row.rating_key or row.key))] = []
+        candidates = [i for i in candidates if not row.year or inventory[i].get('year') == row.year]
+        identities = {(inventory[i].get('tvdb_id'), inventory[i].get('tmdb_id'), inventory[i].get('year')) for i in candidates}
+        if candidates and len(identities) == 1:
+            keys[(row.media_type, str(row.rating_key or row.key))] = candidates
+    return titles, keys
+
+
+def match_history(row, inventory, titles, keys):
+    kind = session_media_kind(row)
+    stable_key = getattr(row, 'grandparent_rating_key', None) if kind == 'show' else row.rating_key
+    if stable_key and (kind, str(stable_key)) in keys:
+        return keys[(kind, str(stable_key))], False
+    raw = row.grandparent_title if kind == 'show' else (row.content_title or row.title)
+    if kind == 'show' and not raw:
+        raw = (row.title or '').split(' - ', 1)[0]
+    candidates = titles.get((kind, normalized_title(raw)), [])
+    identities = {(inventory[i].get('tvdb_id'), inventory[i].get('tmdb_id'), inventory[i].get('year')) for i in candidates}
+    return candidates, len(identities) > 1 or bool(keys.get(('ambiguous', kind, normalized_title(raw))))
+
+
+def enrich_inventory_usage(db: Session, inventory: list[dict[str, Any]], viewer: str = '') -> list[dict[str, Any]]:
     if not inventory:
         return inventory
-    wanted = {inv_watch_key(item) for item in inventory if item.get('title')}
-    if not wanted:
-        return inventory
-    rows = db.scalars(select(PlexSession).where(PlexSession.title.is_not(None)).order_by(PlexSession.started_at.desc()).limit(60000)).all()
-    usage: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in rows:
-        key = (session_media_kind(row), canonical_media_title(row))
-        if key not in wanted:
-            continue
-        data = usage.setdefault(key, {'plays': 0, 'seconds': 0, 'bytes': 0, 'last': None})
-        data['plays'] += 1
-        data['seconds'] += int(row.watched_seconds or 0)
-        data['bytes'] += int(row.bytes_streamed or 0)
-        if not data['last'] or row.started_at > data['last']:
-            data['last'] = row.started_at
-    for item in inventory:
-        data = usage.get(inv_watch_key(item), {})
-        last = data.get('last')
-        item['plays'] = int(data.get('plays') or 0)
-        item['watch_hours'] = round(float(data.get('seconds') or 0) / 3600, 1)
-        item['streamed_bytes'] = int(data.get('bytes') or 0)
-        item['last_watched_at'] = last
-        item['last_watched_label'] = relative_time(last)
-        item['stale_days'] = (datetime.utcnow() - last).days if last else 99999
-        item['delete_score'] = (item.get('size') or 0) * (1 if item['plays'] == 0 else min(item['stale_days'], 730) / 730)
+    titles, keys = history_index(db, inventory)
+    usage = [dict(plays=0, seconds=0, bytes=0, last=None, last_user=None, ambiguous=False, active=[]) for _ in inventory]
+    # Stream every session: no newest-N cutoff and no title-not-null exclusion.
+    for row in db.scalars(select(PlexSession).execution_options(yield_per=2000)):
+        matches, ambiguous = match_history(row, inventory, titles, keys)
+        for i in matches:
+            data = usage[i]
+            if ambiguous:
+                data['ambiguous'] = True
+                continue
+            if viewer and row.username != viewer:
+                continue
+            data['plays'] += 1
+            data['seconds'] += int(row.watched_seconds or 0)
+            data['bytes'] += int(row.bytes_streamed or 0)
+            if not data['last'] or row.started_at > data['last']:
+                data['last'], data['last_user'] = row.started_at, row.username
+    for row in db.scalars(select(ActivePlexSession).where(ActivePlexSession.last_seen_at >= datetime.utcnow() - timedelta(minutes=2))):
+        matches, ambiguous = match_history(row, inventory, titles, keys)
+        for i in matches:
+            usage[i]['active'].append(row.username)
+    for item, data in zip(inventory, usage):
+        last = data['last']
+        item.update(plays=data['plays'], watch_hours=round(data['seconds']/3600, 1), streamed_bytes=data['bytes'],
+                    last_watched_at=last, last_watched_by=data['last_user'],
+                    history_status='ambiguous' if data['ambiguous'] else ('recorded' if last else 'unknown'),
+                    active_viewers=data['active'], last_watched_label=relative_time(last) if last else 'No recorded history',
+                    stale_days=(datetime.utcnow()-last).days if last else None)
     return inventory
+
+
+def calendar_cutoff(months: int, now: datetime | None = None) -> datetime:
+    now = now or datetime.utcnow()
+    y, m = divmod(now.year * 12 + now.month - 1 - months, 12)
+    return now.replace(year=y, month=m+1, day=min(now.day, calendar.monthrange(y, m+1)[1]))
+
+
+def browse_page(inventory, q='', kind='all', source='all', preset='', months=24, before='', history='', viewer='', sort='', direction='asc', page=1, page_size=50, now=None):
+    if preset == 'tv-cleanup':
+        kind = 'series'
+        if not history: history = 'recorded'
+        if not sort: sort, direction = 'size', 'desc'
+    months = months if months in (6, 12, 24) else 24
+    cutoff = datetime.fromisoformat(before) if before else calendar_cutoff(months, now)
+    sort = sort if sort in ('title', 'size', 'last_watched') else 'title'
+    direction = direction if direction in ('asc', 'desc') else 'asc'
+    history = history if history in ('all', 'recorded', 'unknown', 'include', 'ambiguous') else 'all'
+    rows = search_library_items(inventory, q, kind, source, limit=None)
+    if history != 'all':
+        rows = [i for i in rows if
+                (history == 'unknown' and i['history_status'] == 'unknown') or
+                (history == 'ambiguous' and i['history_status'] == 'ambiguous') or
+                (history == 'include' and i['history_status'] == 'unknown') or
+                (history in ('recorded', 'include') and i['history_status'] == 'recorded' and i['last_watched_at'] < cutoff)]
+    if preset == 'tv-cleanup': rows = [i for i in rows if not i.get('active_viewers')]
+    rows.sort(key=lambda i: (normalized_title(i['title']), i['source'], i['id']))
+    field = {'title':'title', 'size':'size', 'last_watched':'last_watched_at'}[sort]
+    known = [i for i in rows if i.get(field) is not None]
+    unknown = [i for i in rows if i.get(field) is None]
+    known.sort(key=lambda i: normalized_title(i[field]) if sort == 'title' else i[field], reverse=direction == 'desc')
+    rows = known + unknown
+    page_size = max(1, min(200, page_size)); pages = max(1, (len(rows)+page_size-1)//page_size)
+    page = max(1, min(pages, page))
+    filters = dict(q=q, kind=kind, source=source, preset=preset, months=months, before=before, history=history, viewer=viewer, sort=sort, direction=direction, page=page, page_size=page_size)
+    def url(n): return '/libraries?' + urlencode(dict(filters, page=n))
+    return dict(items=rows[(page-1)*page_size:page*page_size], filters=filters, total_count=len(rows), total_bytes=sum(i['size'] for i in rows),
+                total_bytes_label=format_bytes(sum(i['size'] for i in rows)), page=page, pages=pages, cutoff=cutoff.isoformat(),
+                previous_url=url(page-1) if page > 1 else None, next_url=url(page+1) if page < pages else None)
 
 
 async def plex_libraries(values: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -198,7 +285,7 @@ async def plex_libraries(values: dict[str, str] | None = None) -> list[dict[str,
     return libs
 
 
-async def library_inventory(db: Session, values: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+async def library_inventory(db: Session, values: dict[str, str] | None = None, viewer: str = '') -> tuple[list[dict[str, Any]], list[str]]:
     inventory: list[dict[str, Any]] = []
     errors: list[str] = []
     for inst in arr_clients('radarr', values):
@@ -213,7 +300,7 @@ async def library_inventory(db: Session, values: dict[str, str] | None = None) -
             inventory += [normalise_series(row, inst['name'], inst['index']) for row in series]
         except Exception as exc:
             errors.append(f"{inst['name']}: {exc}")
-    enrich_inventory_usage(db, inventory)
+    enrich_inventory_usage(db, inventory, viewer)
     return inventory, errors
 
 
@@ -229,7 +316,7 @@ def selected_library_item(inventory: list[dict[str, Any]], q: str, kind: str = '
     return matches[0] if len(matches) == 1 else None
 
 
-def search_library_items(inventory: list[dict[str, Any]], q: str = '', kind: str = 'all', source: str = 'all', limit: int = 250) -> list[dict[str, Any]]:
+def search_library_items(inventory: list[dict[str, Any]], q: str = '', kind: str = 'all', source: str = 'all', limit: int | None = None) -> list[dict[str, Any]]:
     query = (q or '').strip().lower()
     filtered = inventory
     if kind in {'movie', 'series'}:
@@ -250,8 +337,8 @@ def library_stats(inventory: list[dict[str, Any]]) -> dict[str, Any]:
         'total_size': sum(i['size'] for i in inventory),
         'movie_top': sorted(movies, key=lambda i: i['size'], reverse=True)[:8],
         'series_top': sorted(series, key=lambda i: i['size'], reverse=True)[:8],
-        'stale_large': sorted([i for i in inventory if i.get('plays', 0) > 0 and i.get('stale_days', 0) >= 180], key=lambda i: (i.get('size') or 0) * i.get('stale_days', 0), reverse=True)[:8],
-        'never_watched': sorted([i for i in inventory if i.get('plays', 0) == 0], key=lambda i: i.get('size') or 0, reverse=True)[:8],
+        'stale_large': sorted([i for i in inventory if i.get('plays', 0) > 0 and (i.get('stale_days') or 0) >= 180], key=lambda i: (i.get('size') or 0) * i.get('stale_days', 0), reverse=True)[:8],
+        'never_watched': sorted([i for i in inventory if i.get('history_status') == 'unknown'], key=lambda i: i.get('size') or 0, reverse=True)[:8],
         'recently_watched': sorted([i for i in inventory if i.get('last_watched_at')], key=lambda i: i.get('last_watched_at'), reverse=True)[:8],
     }
 
@@ -340,8 +427,21 @@ def history_session_payload(row: PlexSession) -> dict[str, Any]:
     }
 
 
-def library_item_detail(db: Session, item: dict[str, Any]) -> dict[str, Any]:
-    watch_filter = library_item_history_filter(item)
+def library_item_detail(db: Session, item: dict[str, Any], inventory=None, viewer='') -> dict[str, Any]:
+    if inventory is not None:
+        titles, keys = history_index(db, inventory)
+        target = inventory.index(item)
+        ids = []
+        for row in db.scalars(select(PlexSession).execution_options(yield_per=2000)):
+            matches, ambiguous = match_history(row, inventory, titles, keys)
+            if not ambiguous and target in matches:
+                ids.append(row.id)
+        # A single array bind avoids PostgreSQL's parameter limit for very popular titles.
+        watch_filter = (PlexSession.id == any_(bindparam('matched_history_ids', value=ids, type_=ARRAY(Integer)))) if db.bind.dialect.name == 'postgresql' else PlexSession.id.in_(ids)
+    else:
+        watch_filter = library_item_history_filter(item)
+    if viewer:
+        watch_filter = watch_filter & (PlexSession.username == viewer)
     rows = db.scalars(select(PlexSession).where(watch_filter).order_by(PlexSession.started_at.desc()).limit(120)).all()
     plays, seconds, streamed, transcodes, remote_plays, users, devices = db.execute(select(
         func.count(PlexSession.id),
@@ -413,26 +513,30 @@ def library_item_detail(db: Session, item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def browse_libraries_payload(db: Session, q: str = '', kind: str = 'all', source: str = 'all', values: dict[str, str] | None = None) -> dict[str, Any]:
+async def browse_libraries_payload(db: Session, q: str = '', kind: str = 'all', source: str = 'all', values: dict[str, str] | None = None, **options) -> dict[str, Any]:
     cfg = values or all_settings()
     try:
         libs = await plex_libraries(cfg)
     except Exception:
         libs = []
-    inventory, errors = await library_inventory(db, cfg)
-    selected_item = selected_library_item(inventory, q, kind, source)
+    inventory, errors = await library_inventory(db, cfg, options.get('viewer', ''))
+    result = browse_page(inventory, q, kind, source, **options)
+    selected_item = selected_library_item(inventory, q, kind, source) if not options.get('preset') else None
+    viewers = list(db.scalars(select(PlexSession.username).distinct().order_by(PlexSession.username)))
     return {
+        **result, 'viewers': viewers,
+        'coverage': 'Recorded playback sessions, not completed episodes. Missing/import-incomplete history cannot prove never watched. Ambiguous title identities are excluded from stale results. Active playback is excluded from the cleanup preset; live status can lag.',
         'libraries': [library_item_payload(lib) for lib in libs],
-        'items': [library_item_payload(item) for item in search_library_items(inventory, q, kind, source)],
+        'items': [library_item_payload(item) for item in result['items']],
         'q': q,
         'kind': kind,
         'source': source,
-        'filters': {'q': q, 'kind': kind, 'source': source},
+        'filters': result['filters'],
         'sources': sorted({i['source'] for i in inventory}),
         'stats': json_safe_library_stats(library_stats(inventory)),
         'errors': errors,
         'selected_item': library_item_payload(selected_item) if selected_item else None,
-        'selected_detail': library_item_detail(db, selected_item) if selected_item else None,
+        'selected_detail': library_item_detail(db, selected_item, inventory, options.get('viewer', '')) if selected_item else None,
     }
 
 

@@ -89,6 +89,7 @@ class PlexSession(Base):
     plex_user_id: Mapped[str] = mapped_column(String(64), index=True)
     username: Mapped[str] = mapped_column(String(255), index=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    grandparent_rating_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     grandparent_title: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     parent_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -162,6 +163,7 @@ class ActivePlexSession(Base):
     username: Mapped[str] = mapped_column(String(255), index=True)
     rating_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    grandparent_rating_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     grandparent_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parent_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -255,3 +257,10 @@ class UserBlock(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LibraryAuditState(Base):
+    __tablename__ = 'library_audit_state'
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

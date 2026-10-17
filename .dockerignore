@@ -11,3 +11,6 @@ screenshots
 docs/screenshots
 docs/AI_CODEBASE_NOTES.md
 custom_components/
+
+validation-logs/
+source-manifest.json

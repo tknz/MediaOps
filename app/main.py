@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import asyncio
 import hashlib
 import hmac
 import json
@@ -37,6 +38,7 @@ from .services.local_auth import hash_password, local_auth_configured, local_ple
 from .services.integration_tokens import DEFAULT_HOMEASSISTANT_SCOPES, active_integration_tokens, issue_integration_token, revoke_integration_token
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
+from .services import library_audit
 from .integrations import router as integrations_router
 from .services.webhooks import notify_homeassistant
 
@@ -356,8 +358,40 @@ def scheduler_values(values: dict | None = None) -> dict[str, int]:
     }
 
 
+library_health_lock = asyncio.Lock()
+library_storage_lock = asyncio.Lock()
+
+
+async def scheduled_library_health():
+    if library_health_lock.locked():
+        return
+    async with library_health_lock:
+        await run_library_health()
+
+
+async def run_library_health():
+    with SessionLocal() as db:
+        report = await library_audit.health_audit(db)
+        if report['changed'] and (report['issue_count'] or library_audit.state(db, 'health-notified')):
+            await notify_homeassistant('library_health_changed', {'issue_count': report['issue_count']})
+            library_audit.save(db, 'health-notified', {'checked_at': report['checked_at']})
+
+
+async def scheduled_library_storage():
+    if library_storage_lock.locked():
+        return
+    async with library_storage_lock:
+        with SessionLocal() as db:
+            await library_audit.storage_audit(db)
+
+
 def configure_scheduler() -> None:
     job_values = scheduler_values()
+    with SessionLocal() as db:
+        health_due = library_audit.next_run(db, 'health', timedelta(minutes=15))
+        storage_due = library_audit.next_run(db, 'storage', timedelta(weeks=1))
+    scheduler.add_job(scheduled_library_health, 'interval', minutes=15, id='library-health', replace_existing=True, max_instances=1, coalesce=True, next_run_time=health_due)
+    scheduler.add_job(scheduled_library_storage, 'interval', weeks=1, id='library-storage', replace_existing=True, max_instances=1, coalesce=True, next_run_time=storage_due)
     scheduler.add_job(scheduled_request_sync, 'interval', minutes=job_values['requests_minutes'], id='request-sync', replace_existing=True, next_run_time=datetime.utcnow())
     scheduler.add_job(scheduled_plex_poll, 'interval', seconds=job_values['plex_live_seconds'], id='plex-poll', replace_existing=True, next_run_time=datetime.utcnow())
     scheduler.add_job(scheduled_downloads_poll, 'interval', seconds=job_values['downloads_seconds'], id='downloads-poll', replace_existing=True, next_run_time=datetime.utcnow())
@@ -2120,10 +2154,11 @@ async def seerr_decline_request_api(request_id: str, db: Session = Depends(get_d
 
 @app.get('/api/libraries')
 async def libraries_api(
-    q: str = '', kind: str = 'all', source: str = 'all',
+    q: str = '', kind: str = 'all', source: str = 'all', preset: str = '', months: int = 24, before: str = '',
+    history: str = '', viewer: str = '', sort: str = '', direction: str = 'asc', page: int = 1, page_size: int = 50,
     db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)
 ):
-    payload = await library_service.browse_libraries_payload(db, q, kind, source)
+    payload = await browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size)
     payload['user'] = api_user_payload(context)
     payload['server_label'] = media_server_label()
     return payload
@@ -2794,71 +2829,26 @@ def save_user_policy(
     return RedirectResponse(f'/users/{username}?tab=permissions', status_code=303)
 
 
+async def browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size):
+    if before:
+        try:
+            datetime.strptime(before, '%Y-%m-%d')
+        except ValueError:
+            raise HTTPException(422, 'Cutoff must be a date: YYYY-MM-DD')
+    return await library_service.browse_libraries_payload(db, q, kind, source, preset=preset, months=months, before=before,
+        history=history, viewer=viewer, sort=sort, direction=direction, page=page, page_size=page_size)
+
+
 @app.get('/libraries', response_class=HTMLResponse)
-async def libraries(request: Request, db: Session = Depends(get_db), q: str = '', kind: str = 'all', source: str = 'all'):
+async def libraries(request: Request, db: Session = Depends(get_db), q: str = '', kind: str = 'all', source: str = 'all',
+    preset: str = '', months: int = 24, before: str = '', history: str = '', viewer: str = '', sort: str = '',
+    direction: str = 'asc', page: int = 1, page_size: int = 50):
     user = current_user(request, db)
     if not user:
         return RedirectResponse('/', status_code=302)
-    cfg = all_settings()
-    libs = []
-    if cfg.get('plex_server_url') and cfg.get('plex_server_token'):
-        try:
-            client = PlexClient(ServiceConfig(url=cfg['plex_server_url'], token=cfg['plex_server_token']))
-            libs = await client.libraries()
-            for lib in libs:
-                try:
-                    lib['count'] = await client.library_count(lib['key'])
-                except Exception:
-                    lib['count'] = 0
-                lib['bytes'] = None
-        except Exception:
-            libs = []
-
-    inventory = []
-    errors = []
-    for inst in _arr_clients('radarr'):
-        try:
-            movies = await inst['client'].movies()
-            inventory += [normalise_movie(m, inst['name'], inst['index']) for m in movies]
-        except Exception as exc:
-            errors.append(f"{inst['name']}: {exc}")
-    for inst in _arr_clients('sonarr'):
-        try:
-            series = await inst['client'].series()
-            inventory += [normalise_series(row, inst['name'], inst['index']) for row in series]
-        except Exception as exc:
-            errors.append(f"{inst['name']}: {exc}")
-
-    enrich_inventory_usage(db, inventory)
-    movies = [i for i in inventory if i['kind'] == 'movie']
-    series = [i for i in inventory if i['kind'] == 'series']
-    sources = sorted({i['source'] for i in inventory})
-    selected_item = selected_library_item(inventory, q, kind, source)
-    selected_detail = library_item_detail(db, selected_item) if selected_item else None
-    query = (q or '').strip().lower()
-    filtered = inventory
-    if kind in {'movie', 'series'}:
-        filtered = [i for i in filtered if i['kind'] == kind]
-    if source and source != 'all':
-        filtered = [i for i in filtered if i['source'] == source]
-    if query:
-        filtered = [i for i in filtered if query in (i['title'] or '').lower() or query in (i.get('path') or '').lower()]
-    filtered = sorted(filtered, key=lambda i: (i.get('title') or '').lower())[:250]
-    library_stats = {
-        'movies_count': len(movies), 'movies_size': sum(i['size'] for i in movies),
-        'series_count': len(series), 'series_size': sum(i['size'] for i in series),
-        'total_size': sum(i['size'] for i in inventory),
-        'movie_top': sorted(movies, key=lambda i: i['size'], reverse=True)[:8],
-        'series_top': sorted(series, key=lambda i: i['size'], reverse=True)[:8],
-        'stale_large': sorted([i for i in inventory if i.get('plays', 0) > 0 and i.get('stale_days', 0) >= 180], key=lambda i: (i.get('size') or 0) * i.get('stale_days', 0), reverse=True)[:8],
-        'never_watched': sorted([i for i in inventory if i.get('plays', 0) == 0], key=lambda i: i.get('size') or 0, reverse=True)[:8],
-        'recently_watched': sorted([i for i in inventory if i.get('last_watched_at')], key=lambda i: i.get('last_watched_at'), reverse=True)[:8],
-    }
-    return templates.TemplateResponse('libraries.html', {
-        'request': request, 'user': user, 'libraries': libs, 'items': filtered,
-        'q': q, 'kind': kind, 'source': source, 'sources': sources,
-        'stats': library_stats, 'errors': errors, 'selected_item': selected_item, 'selected_detail': selected_detail,
-    })
+    payload = await browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size)
+    payload.update(user={'is_admin': user.is_admin}, server_label=media_server_label())
+    return templates.TemplateResponse('libraries.html', {'request': request, 'user': user, 'payload': payload})
 
 
 @app.post('/libraries/manage/delete')
@@ -2905,6 +2895,64 @@ async def set_library_item_monitoring(
         logger.exception('Failed to update library monitoring through Arr')
     target = return_to if return_to.startswith('/libraries') and not return_to.startswith('//') else '/libraries'
     return RedirectResponse(target, status_code=303)
+
+
+def library_audit_payload(db, source='all', page=1, target_mbps=None):
+    storage = library_audit.state(db, 'storage')
+    health = library_audit.state(db, 'health')
+    result = {'storage': None, 'health': health, 'source': source, 'sources': [], 'target_mbps': target_mbps}
+    if storage:
+        files = storage.get('files', [])
+        result['sources'] = sorted({f['source'] for f in files} | {c['source'] for g in storage.get('duplicates', []) for c in g['copies']})
+        files = [f for f in files if source == 'all' or f['source'] == source]
+        efficiency = library_audit.efficiency_report(files, target_mbps)
+        candidates = efficiency['candidates']; pages = max(1,(len(candidates)+49)//50); page=max(1,min(page,pages))
+        efficiency['candidates'] = candidates[(page-1)*50:page*50]
+        result.update(page=page,pages=pages,candidate_count=len(candidates))
+        result['storage'] = {k:v for k,v in storage.items() if k not in ('files','efficiency')}
+        result['storage']['duplicates'] = [g for g in storage['duplicates'] if source == 'all' or any(c['source']==source for c in g['copies'])]
+        result['storage']['efficiency'] = efficiency
+    if health:
+        result['health'] = {k:v for k,v in health.items() if k != 'observations'}
+    return result
+
+
+@app.get('/api/libraries/audit')
+def library_audit_api(source: str = 'all', page: int = 1, target_mbps: float | None = None,
+    db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    if not context.is_admin:
+        raise HTTPException(403, 'Admin required')
+    try:
+        return library_audit_payload(db, source, page, target_mbps)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@app.get('/libraries/audit/report', response_class=HTMLResponse)
+def library_audit_page(request: Request, source: str = 'all', page: int = 1, target_mbps: float | None = None, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user or not user.is_admin:
+        raise HTTPException(403, 'Admin required')
+    try:
+        payload = library_audit_payload(db, source, page, target_mbps)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return templates.TemplateResponse('library_audit.html', {'request':request, 'user':user, 'payload':payload})
+
+
+@app.post('/libraries/audit/run')
+async def library_audit_run(request: Request, audit: str = Form(...), db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user or not user.is_admin:
+        raise HTTPException(403, 'Admin required')
+    job_id = {'health':'library-health-now','storage':'library-storage-now'}.get(audit)
+    if not job_id:
+        raise HTTPException(422, 'Unknown audit')
+    # A single job identity prevents concurrent manually requested scans.
+    if not scheduler.get_job(job_id):
+        scheduler.add_job(scheduled_library_health if audit == 'health' else scheduled_library_storage,
+            'date', run_date=datetime.utcnow(), id=job_id, max_instances=1)
+    return RedirectResponse('/libraries/audit/report', status_code=303)
 
 
 @app.get('/libraries/{section_id}', response_class=HTMLResponse)

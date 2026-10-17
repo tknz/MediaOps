@@ -1,0 +1,23 @@
+<h1>Libraries</h1>
+<p><a href="/libraries?preset=tv-cleanup">TV cleanup: older than two years</a> · <a href="/libraries/audit/report">Duplicates, storage efficiency and health</a></p>
+<p>{{ payload.coverage }}</p>
+{% set f = payload.filters %}
+<form method="get" action="/libraries">
+<input type="hidden" name="preset" value="{{ f.preset }}">
+<label>Title or path <input name="q" value="{{ f.q }}"></label>
+<label>Type <select name="kind">{% for v,t in [('all','All'),('series','TV'),('movie','Movies')] %}<option value="{{ v }}" {% if f.kind==v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+<label>Source <select name="source">{% for v in ['all']+payload.sources %}<option {% if f.source==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+<label>Inactivity months <select name="months">{% for v in [6,12,24] %}<option {% if f.months==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+<label>Or before date (UTC) <input type="date" name="before" value="{{ f.before }}"></label>
+<label>History <select name="history">{% for v,t in [('all','All history'),('recorded','Recorded before cutoff'),('unknown','No recorded history'),('include','Before cutoff plus no history'),('ambiguous','Ambiguous identity')] %}<option value="{{ v }}" {% if f.history==v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+<label>Playback scope <select name="viewer"><option value="">ALL viewers</option>{% for v in payload.viewers %}<option {% if f.viewer==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+<label>Sort <select name="sort">{% for v,t in [('size','Size'),('last_watched','Last watched'),('title','Title')] %}<option value="{{ v }}" {% if f.sort==v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+<label>Direction <select name="direction">{% for v in ['asc','desc'] %}<option {% if f.direction==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+<input type="hidden" name="page_size" value="{{ f.page_size }}"><button>Apply</button>
+</form>
+<p>{{ payload.total_count }} results · {{ payload.total_bytes_label }} · cutoff {{ payload.cutoff }} UTC · page {{ payload.page }}/{{ payload.pages }}{% if f.viewer %} · ONLY {{ f.viewer }}; other viewers may have watched recently{% endif %}</p>
+{% for error in payload.errors %}<p>Source unavailable: {{ error }}</p>{% endfor %}
+<table class="media-table"><thead><tr><th>Title</th><th>Source</th><th>Size</th><th>Last watched UTC</th><th>Who watched last</th><th>Episodes/files</th><th>Monitoring</th><th>Playback</th></tr></thead><tbody>
+{% for i in payload['items'] %}<tr><td><a href="/libraries?q={{ i.title|urlencode }}&kind={{ i.kind }}&source={{ i.source|urlencode }}">{{ i.title }}</a></td><td>{{ i.source }}</td><td>{{ i.size_label }}</td><td>{{ i.last_watched_at or i.history_status }}</td><td>{{ i.last_watched_by or '—' }}</td><td>{{ i.quality }}</td><td>{{ 'Monitored' if i.monitored else 'Not monitored' }}</td><td>{{ i.active_viewers|join(', ') }}</td></tr>{% endfor %}
+</tbody></table>
+{% if payload.previous_url %}<a href="{{ payload.previous_url }}">Previous</a>{% endif %} {% if payload.next_url %}<a href="{{ payload.next_url }}">Next</a>{% endif %}

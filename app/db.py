@@ -52,6 +52,7 @@ def ensure_schema_extensions():
                 'last_plex_sync_at TIMESTAMP',
             ],
             'plex_sessions': [
+                'grandparent_rating_key VARCHAR(128)',
                 'grandparent_title VARCHAR(512)',
                 'parent_title VARCHAR(512)',
                 'content_title VARCHAR(512)',
@@ -64,6 +65,7 @@ def ensure_schema_extensions():
                 'machine_id VARCHAR(255)',
             ],
             'active_plex_sessions': [
+                'grandparent_rating_key VARCHAR(128)',
                 'grandparent_title VARCHAR(512)',
                 'parent_title VARCHAR(512)',
                 'content_title VARCHAR(512)',

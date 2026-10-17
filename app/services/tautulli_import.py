@@ -122,6 +122,7 @@ def _upsert_session(db: Session, row: dict[str, Any], source: str = 'tautulli') 
         'plex_user_id': str(row.get('user_id') or ''),
         'username': row.get('user') or row.get('friendly_name') or 'unknown',
         'title': _title(row),
+        'grandparent_rating_key': str(row.get('grandparent_rating_key') or '') or None,
         'grandparent_title': row.get('grandparent_title'),
         'parent_title': row.get('parent_title'),
         'content_title': _content_title(row),
@@ -152,7 +153,7 @@ def _upsert_session(db: Session, row: dict[str, Any], source: str = 'tautulli') 
                 setattr(existing, key, value)
                 changed = True
         # Keep these fresh if the older DB/API import had weaker values.
-        for key in ('title', 'grandparent_title', 'parent_title', 'content_title', 'rating_key', 'media_index', 'parent_media_index', 'ip_address', 'thumb_path', 'machine_id', 'reach'):
+        for key in ('title', 'grandparent_rating_key', 'grandparent_title', 'parent_title', 'content_title', 'rating_key', 'media_index', 'parent_media_index', 'ip_address', 'thumb_path', 'machine_id', 'reach'):
             value = values.get(key)
             if value not in (None, '') and getattr(existing, key) != value:
                 setattr(existing, key, value)
@@ -169,7 +170,7 @@ def import_tautulli(db: Session, path: str) -> int:
     src.row_factory = sqlite3.Row
     metadata_columns = {r['name'] for r in src.execute('pragma table_info(session_history_metadata)').fetchall()}
     optional_metadata = []
-    for col in ('rating_key', 'media_index', 'parent_media_index'):
+    for col in ('grandparent_rating_key', 'rating_key', 'media_index', 'parent_media_index'):
         optional_metadata.append(f'md.{col}' if col in metadata_columns else f'NULL as {col}')
     rows = src.execute(f'''
         select h.id, h.user_id, h.user, h.started, h.stopped, coalesce(h.paused_counter,0) paused_counter,

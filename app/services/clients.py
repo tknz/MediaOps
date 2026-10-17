@@ -152,6 +152,7 @@ class PlexClient(JsonServiceClient):
                 'rating_key': item.attrib.get('ratingKey'),
                 'title': item.attrib.get('title'),
                 'display_title': ((item.attrib.get('grandparentTitle') + ' - ') if item.attrib.get('grandparentTitle') else '') + (item.attrib.get('title') or ''),
+                'grandparent_rating_key': item.attrib.get('grandparentRatingKey'),
                 'grandparent_title': item.attrib.get('grandparentTitle'),
                 'parent_title': item.attrib.get('parentTitle'),
                 'media_index': int(item.attrib.get('index', '0')) if item.attrib.get('index') else None,
