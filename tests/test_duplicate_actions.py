@@ -52,10 +52,10 @@ class DuplicateActionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(TimeoutError):await d.remove(self.db,confirmation)
             with self.assertRaisesRegex(ValueError,'already submitted'):await d.remove(self.db,confirmation)
             self.plex.delete.assert_awaited_once()
-    def test_resolution_suggestion_not_codec_size_or_editions(self):
+    def test_resolution_suggestion_preserves_different_editions(self):
         d.annotate(self.group);self.assertTrue(self.group['copies'][0]['lower_resolution'])
         self.group['copies'][0].pop('lower_resolution');self.group['copies'][1]['edition']='Directors Cut'
-        d.annotate(self.group);self.assertNotIn('lower_resolution',self.group['copies'][0])
+        d.annotate(self.group);self.assertFalse(self.group['copies'][0]['lower_resolution']);self.assertFalse(self.group['copies'][0]['auto_delete'])
     def test_delete_requires_admin_origin_and_explicit_confirmation(self):
         c=TestClient(main.app)
         with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)),patch.object(d,'remove',AsyncMock()) as remove:

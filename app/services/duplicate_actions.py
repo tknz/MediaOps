@@ -15,18 +15,40 @@ lock = asyncio.Lock()
 def key(value):
     return hashlib.sha256(str(value).encode()).hexdigest()[:24]
 
+def is_split_group(group):
+    """Use actual part references and filename suffixes, excluding words in the title."""
+    seen={}
+    words=re.findall(r'[^\W_]+',str(group.get('title') or ''),re.UNICODE)
+    title_pattern=r'[\W_]*'.join(re.escape(word) for word in words)
+    for copy in group.get('copies',[]):
+        if int(copy.get('part_count') or 1)>1:return True
+        for ref in copy.get('references',[]):
+            identity=(ref.get('rating_key'),ref.get('media_id'))
+            if not all(identity):continue
+            if identity in seen and seen[identity]!=copy.get('path'):return True
+            seen[identity]=copy.get('path')
+        filename=str(copy.get('path') or '').rsplit('/',1)[-1].rsplit('.',1)[0]
+        if title_pattern:filename=re.sub(title_pattern,'',filename,flags=re.IGNORECASE)
+        if re.search(r'(?i)\b(?:cd|disc|disk|part)[ ._-]*0?[1-9][0-9]?\b',filename):return True
+    return False
+
+
 def annotate(group):
-    group['key'] = key((group['kind'],group['identity']))
+    group['key']=key((group['kind'],group['identity']))
     ranks=[]
     for copy in group['copies']:
-        copy['key']=key(copy.get('path'))
-        value=str(copy.get('resolution') or '').lower()
-        rank={'4k':2160,'2160':2160,'1080':1080,'1080p':1080,'720':720,'720p':720,'480':480,'sd':480}.get(value)
-        ranks.append(rank)
-    # Resolution is an explicit comparison, not a claim that codec/bytes determine quality.
-    if len(ranks)>1 and all(ranks) and len(set(ranks))>1 and len({c.get('edition') or '' for c in group['copies']})==1 and group.get('review_label')!='Split movie?':
-        lowest=min(ranks)
-        for c,rank in zip(group['copies'],ranks): c['lower_resolution']=rank==lowest
+        copy.update(key=key(copy.get('path')),lower_resolution=False,auto_delete=False,selection_reason=None)
+        value=str(copy.get('resolution') or '').strip().lower()
+        ranks.append({'4k':2160,'uhd':2160,'2160':2160,'2160p':2160,'1080':1080,'1080p':1080,'720':720,'720p':720,'480':480,'480p':480,'sd':480}.get(value))
+    if len(ranks)<2 or not all(ranks) or len({str(c.get('edition') or '').strip().casefold() for c in group['copies']})!=1 or is_split_group(group):return
+    highest=max(ranks)
+    sizes=[int(c.get('size') or 0) for c,rank in zip(group['copies'],ranks) if rank==highest]
+    smallest=min(sizes) if all(s>0 for s in sizes) else None
+    for copy,rank in zip(group['copies'],ranks):
+        if rank<highest:
+            copy.update(lower_resolution=True,auto_delete=True,selection_reason='Lower resolution')
+        elif smallest is not None and int(copy.get('size') or 0)>smallest:
+            copy.update(auto_delete=True,selection_reason='Larger at same resolution')
 
 
 def client():
@@ -88,7 +110,7 @@ async def inspect(db, group_key, copy_key, refresh_missing=True, *, remove_paths
         paths=[p.get('file') for p in node.findall('.//Part') if p.get('file')]
         if target['path'] in paths or (not paths and node.get('ratingKey')==target['rating_key']):
             raise ValueError('This copy is playing now. Wait until playback ends.')
-    return dict(title=group['title'],group_key=group_key,copy_key=copy_key,target=target,keep=keep,deleting=sorted(remove_paths),split=any(re.search(r'(?i)\b(?:cd|disc|part)[ ._-]*[12]\b',c['path']) for c in copies))
+    return dict(title=group['title'],group_key=group_key,copy_key=copy_key,target=target,keep=keep,deleting=sorted(remove_paths),split=is_split_group(dict(title=group['title'],copies=copies)))
 
 
 def fingerprint(review):

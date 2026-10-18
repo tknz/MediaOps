@@ -28,10 +28,11 @@
     });
     form.querySelector('[data-select-lower]').addEventListener('click',()=>{
       for(const input of choices){
-        const choice=input.closest('fieldset').querySelector(input.dataset.lowerResolution==='true' ? '[value="delete"]' : '[value="keep"]');
+        const choice=input.closest('fieldset').querySelector(input.dataset.autoDelete==='true' ? '[value="delete"]' : '[value="keep"]');
         choice.checked=true;
       }
       update();
+      if(!choices.some(input=>input.checked)) error.textContent='No copies qualify. Equal sizes, unknown metadata, split movies and different editions need manual selection.';
     });
     form.addEventListener('submit',event=>{update();if(review.disabled)event.preventDefault();});
     update();
