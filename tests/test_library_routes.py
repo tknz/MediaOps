@@ -25,7 +25,7 @@ class RouteTests(unittest.TestCase):
     def test_replacements_html_api_batch_review_and_auth(self):
         from app.services import replacements as r
         candidate=dict(key='candidate',title='Movie.2020.2160p.HEVC.SDR.AAC2.0',bytes=10_000_000_000,saving_bytes=40_000_000_000,audio='Stereo',format='WEBDL-2160p',codec='HEVC',range='SDR label')
-        row=dict(key='0:1',fingerprint='file',source='Radarr',title='Movie',year=2020,monitored=False,bytes=50_000_000_000,format='Remux-2160p',codec='HEVC',hdr='HDR10',status='Ready',candidate=candidate)
+        row=dict(key='0:1',index=0,movie_id=1,fingerprint='file',source='Radarr',title='Movie',year=2020,monitored=False,bytes=50_000_000_000,format='Remux-2160p',codec='HEVC',hdr='HDR10',status='Ready',candidate=candidate)
         save(self.db,r.KEY,dict(rows=[row],status='complete',done=1,checked_at=datetime.utcnow().isoformat()))
         with patch.object(main,'current_user',return_value=self.user):
             html=self.client.get('/libraries/replacements');self.assertEqual(html.status_code,200,html.text)
@@ -39,6 +39,9 @@ class RouteTests(unittest.TestCase):
                 with patch.object(main.scheduler,'add_job') as schedule:
                     response=self.client.post('/libraries/replacements/approve',data={'confirmation':r.token([row]),'confirm':'replace'},headers={'Origin':'http://testserver'},follow_redirects=False)
                     self.assertEqual(response.status_code,303);schedule.assert_called_once();approve.assert_not_awaited()
+                    jobs=self.client.get('/libraries/replacements/jobs');self.assertEqual(jobs.status_code,200,jobs.text);self.assertIn('Approved',jobs.text)
+                    retry=self.client.post('/libraries/replacements/approve',data={'confirmation':r.token([row]),'confirm':'replace'},headers={'Origin':'http://testserver'},follow_redirects=False)
+                    self.assertEqual(retry.status_code,303);schedule.assert_called_once();self.assertIn('error=',retry.headers['location'])
         main.app.dependency_overrides[main.require_auth]=lambda:AuthContext('reader',False)
         self.assertEqual(self.client.get('/api/libraries/replacements').status_code,403)
         with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)):

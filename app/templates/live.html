@@ -74,7 +74,7 @@
   <table class="download-table"><thead><tr><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Size</th><th scope="col">Speed / ETA</th>{% if user.is_admin %}<th scope="col">Controls</th>{% endif %}</tr></thead>
   <tbody data-live-downloads>
   {% for q in downloads %}
-    <tr>
+    <tr id="download-{{ q.download_id or q.item_key }}">
       <td class="download-name"><strong>{{ q.display_title or q.title }}</strong><span class="download-source">{{ q.source }}{% if q.quality %} · {{ q.quality }}{% endif %}</span><details class="download-details"><summary>Release details</summary><p>{{ q.title }}</p>{% if q.indexer %}<p>Indexer: {{ q.indexer }}</p>{% endif %}{% if q.client %}<p>{{ q.client }} · {{ q.category or 'No category' }} · {{ q.priority or 'Normal' }} priority</p>{% endif %}{% if q.size_left_bytes is not none %}<p>{{ q.size_left_bytes|bytes }} remaining</p>{% endif %}</details>{% if q.message %}<p class="download-warning">{{ q.message }}</p>{% endif %}</td>
       <td><span class="download-state">{{ q.status|replace('_',' ') }}</span></td>
       <td class="download-progress">{% if q.progress is not none %}<span>{{ '%.0f'|format(q.progress) }}%</span><progress max="100" value="{{ q.progress }}" aria-label="Progress for {{ q.display_title or q.title }}"></progress>{% else %}<span>Not reported</span>{% endif %}</td>

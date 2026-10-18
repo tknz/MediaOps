@@ -1,6 +1,7 @@
 (() => {
   const form = document.querySelector('[data-replacements]');
-  if (!form || form.dataset.bound) return;
+  if (!form) { if(document.querySelector('[data-replacement-refresh]')) setTimeout(() => { if(!document.querySelector('details[open]')) window.location.reload(); },15000); return; }
+  if(form.dataset.bound) return;
   form.dataset.bound = 'true';
   const choices = [...form.querySelectorAll('input[name="selection"]')];
   const all = form.querySelector('[data-select-replacements]');

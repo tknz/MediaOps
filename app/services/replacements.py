@@ -7,7 +7,7 @@ import unicodedata
 from datetime import datetime
 from itsdangerous import URLSafeTimedSerializer
 from ..config import settings
-from . import library_audit as audit, libraries, compact_policy as policy, duplicate_actions
+from . import library_audit as audit, libraries, compact_policy as policy, duplicate_actions, replacement_tracking as tracking
 
 scan_lock=asyncio.Lock()
 action_lock=asyncio.Lock()
@@ -16,14 +16,19 @@ KEY='compact-replacements'
 def stamp():return datetime.utcnow().isoformat()
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
 def normal(value):return re.sub(r'[^a-z0-9]','',unicodedata.normalize('NFKD',str(value)).encode('ascii','ignore').decode().lower())
+def operation_key(prefix,value):return prefix+digest(value)[:64-len(prefix)]
 def release_key(release):return digest([release.get('indexerId'),release.get('guid')])
 def file_stamp(movie):
     f=movie.get('movieFile') or {}
     return digest([movie.get('id'),movie.get('tmdbId'),movie.get('qualityProfileId'),movie.get('monitored'),f.get('id'),f.get('path'),f.get('size'),f.get('quality'),f.get('edition')])
 
-def eligible(movie, release):
-    """Native approval is mandatory; never force an import or disguise a rejected release."""
-    if not release.get('approved') or not release.get('downloadAllowed') or release.get('rejections'):return False
+def eligible(movie, release, *, above_target=False):
+    """Only a size-only native rejection may be offered as an explicit fallback."""
+    rejects=release.get('rejections') or []
+    size_only=bool(rejects) and all(re.fullmatch(r'.+ is larger than maximum allowed .+ \(for .+\)',str(reason)) for reason in rejects)
+    if not release.get('downloadAllowed'):return False
+    if not release.get('approved') or rejects:
+        if not (above_target and size_only and release.get('customFormatScore',0)>=0):return False
     title=release.get('title') or ''; q=(release.get('quality') or {}).get('quality') or {}
     current=(movie['movieFile'].get('quality') or {}).get('quality') or {}
     if q.get('resolution')!=current.get('resolution') or q.get('resolution',0)<720:return False
@@ -40,15 +45,19 @@ def eligible(movie, release):
     if normal(release.get('edition') or '')!=normal(movie['movieFile'].get('edition') or ''):return False
     size=int(release.get('size') or 0); old=int(movie['movieFile'].get('size') or 0)
     ceiling=policy.ceiling_bytes(movie.get('runtime'),q['resolution'])
-    return bool(size and ceiling and size<=ceiling and size<=old*.8 and old-size>=2_000_000_000)
+    return bool(size and ceiling and (size<=ceiling or above_target) and size<=old*.8 and old-size>=2_000_000_000)
 
 def choose(movie, releases):
     candidates=[r for r in releases if eligible(movie,r)]
     # Prefer stereo, then 5.1; use smallest acceptable file within that tier.
     candidates.sort(key=lambda r:({'Stereo':0,'5.1':1,'Not stated':2}.get(policy.audio_label(r['title']),3),r['size'],release_key(r)))
+    above_target=False
+    if not candidates:
+        candidates=sorted([r for r in releases if eligible(movie,r,above_target=True)],key=lambda r:(r['size'],release_key(r)))
+        above_target=True
     if not candidates:return None
     r=candidates[0]
-    return dict(key=release_key(r),title=r['title'],bytes=r['size'],saving_bytes=movie['movieFile']['size']-r['size'],audio=policy.audio_label(r['title']),format=r['quality']['quality']['name'],codec='HEVC' if re.search(policy.HEVC,r['title']) else 'Not stated',range='SDR label' if re.search(r'(?i)\bSDR\b',r['title']) else 'No HDR label',score=r.get('customFormatScore',0))
+    return dict(key=release_key(r),title=r['title'],bytes=r['size'],saving_bytes=movie['movieFile']['size']-r['size'],audio=policy.audio_label(r['title']),format=r['quality']['quality']['name'],codec='HEVC' if re.search(policy.HEVC,r['title']) else 'Not stated',range='SDR label' if re.search(r'(?i)\bSDR\b',r['title']) else 'No HDR label',score=r.get('customFormatScore',0),above_target=above_target,target_bytes=policy.ceiling_bytes(movie.get('runtime'),r['quality']['quality']['resolution']))
 
 def row(movie, inst):
     f=movie['movieFile']; q=(f.get('quality') or {}).get('quality') or {}; info=f.get('mediaInfo') or {}
@@ -97,6 +106,10 @@ def payload(db):
     report=audit.state(db,KEY) or dict(rows=[],status='not_run',done=0)
     for row in report['rows']:
         if row['status']=='No suitable release':row['note']='No approved release meets the replacement rules.'
+    report['operations']=tracking.summary(db)
+    for row in report['rows']:
+        task=next((t for t in report['operations']['rows'] if tracking.blocked(t,row)),None) if row.get('candidate') else None
+        if task:row.update(status=task['status'],operation=task)
     report['approval']=audit.state(db,KEY+'-approval') or {}
     report['ready']=sum(r['status']=='Ready' for r in report['rows'])
     report['saving_bytes']=sum(r['candidate']['saving_bytes'] for r in report['rows'] if r['status']=='Ready')
@@ -112,8 +125,10 @@ def selections(db, keys):
 def serializer():return URLSafeTimedSerializer(settings.secret_key,salt='compact-replacement-approval')
 def token(rows):return serializer().dumps(dict(rows=[dict(key=r['key'],fingerprint=r['fingerprint'],candidate=r['candidate']['key']) for r in rows]))
 
-async def inspect_one(db, selection, instances):
-    r=selections(db,[selection['key']])[0]
+async def inspect_one(db, selection, instances, *, check_release=True):
+    report=audit.state(db,KEY) or {}
+    r=next((r for r in report.get('rows',[]) if r['key']==selection['key']),None)
+    if not r or not r.get('candidate'):raise ValueError('Result missing. Review again.')
     if r['fingerprint']!=selection['fingerprint'] or r['candidate']['key']!=selection['candidate']:raise ValueError('Results changed. Review again.')
     inst=next((i for i in instances if i['index']==r['index'] and i['name']==r['source']),None)
     if not inst:raise ValueError('Source changed.')
@@ -125,39 +140,60 @@ async def inspect_one(db, selection, instances):
     relative=str(movie['movieFile'].get('relativePath') or '')
     if not relative:raise ValueError('Missing file path; review in Radarr.')
     if any(str(s.get('file') or '').endswith('/'+relative) or (not s.get('file') and normal(s.get('title'))==normal(movie['title'])) for s in sessions):raise ValueError(r['title']+' is playing now.')
+    if not check_release:return c,None,r
     releases=await c.releases(movie['id'])
     release=next((x for x in releases if release_key(x)==selection['candidate']),None)
-    if not release or not eligible(movie,release) or release['size']!=r['candidate']['bytes']:raise ValueError(r['title']+': release is no longer approved. Run the check again.')
-    if audit.state(db,'compact-release-'+digest([r['key'],r['fingerprint'],selection['candidate']])):raise ValueError(r['title']+': already submitted; check Downloads.')
+    if not release or not eligible(movie,release,above_target=bool(r['candidate'].get('above_target'))) or release['size']!=r['candidate']['bytes']:raise ValueError(r['title']+': release is no longer approved. Run the check again.')
+    if audit.state(db,operation_key('compact-release-',[r['key'],r['fingerprint'],selection['candidate']])):raise ValueError(r['title']+': already submitted; check Downloads.')
     return c,release,r
 
+def progress(db, **values):
+    previous=audit.state(db,KEY+'-approval') or {}
+    audit.save(db,KEY+'-approval',dict(previous,**values))
+
 async def approve(db, confirmation, actor):
-    data=serializer().loads(confirmation,max_age=600); rows=data.get('rows',[])
+    previous=audit.state(db,KEY+'-approval') or {}
+    resuming=confirmation is None
+    data=previous.get('plan') if resuming else serializer().loads(confirmation,max_age=600)
+    if not data:raise ValueError('No saved approval plan.')
+    rows=data.get('rows',[])
     if not rows or len(rows)>50 or len({r['key'] for r in rows})!=len(rows):raise ValueError('Invalid batch.')
     async with action_lock:
         if scan_lock.locked():raise ValueError('Search in progress. Wait for it to finish.')
-        op='compact-grab-'+digest(confirmation)
-        if audit.state(db,op):raise ValueError('Already submitted. Check Downloads before retrying.')
-        instances=libraries.arr_clients('radarr')
-        audit.save(db,KEY+'-approval',dict(status='checking',active=True,total=len(rows),done=0,submitted=0))
+        op=previous.get('job_id') if resuming else operation_key('compact-grab-',confirmation)
+        if not op:raise ValueError('Missing operation.')
+        if audit.state(db,op) and not resuming:raise ValueError('Already submitted. See replacement status.')
+        if resuming and tracking.time_value(stamp())-tracking.time_value(previous.get('approved_at'))>86400:raise ValueError('Saved approval expired. Review the remaining replacements.')
+        if not previous.get('plan'):
+            raw=audit.state(db,KEY); chosen=[next(r for r in raw['rows'] if r['key']==s['key']) for s in rows]
+            tracking.reserve(db,chosen,actor)
+        progress(db,status='checking',active=True,total=len(rows),done=0,submitted=0,plan=data,job_id=op,actor=actor,approved_at=previous.get('approved_at') or stamp())
+        instances=libraries.arr_clients('radarr'); pending=[];completed=0
         for number,selected in enumerate(rows):
-            await inspect_one(db,selected,instances)
-            audit.save(db,KEY+'-approval',dict(status='checking',active=True,total=len(rows),done=number+1,submitted=0))
-        completed=0
-        for selected in rows:
+            raw=next(r for r in (audit.state(db,KEY) or {})['rows'] if r['key']==selected['key'])
+            task=audit.state(db,tracking.operation_id(raw))
+            if task and task.get('attempted'):completed+=int(bool(task.get('confirmed')));continue
+            await inspect_one(db,selected,instances,check_release=False)
+            pending.append(selected)
+            progress(db,status='checking',done=number+1,submitted=completed)
+        for selected in pending:
+            task=None
             try:
                 c,release,r=await inspect_one(db,selected,instances)
-                # Persist before sending. An ambiguous network response is never retried automatically.
+                task=audit.state(db,tracking.operation_id(r))
                 audit.save(db,op,dict(status='submitting',completed=completed,actor=actor,at=stamp(),keys=[s['key'] for s in rows]))
-                audit.save(db,'compact-release-'+digest([r['key'],r['fingerprint'],selected['candidate']]),dict(status='submitted',at=stamp(),actor=actor))
-                await c.post_json('/api/v3/release',dict(guid=release['guid'],indexerId=release['indexerId'],movieId=r['movie_id']))
-                audit.save(db,KEY+'-approval',dict(status='downloading',active=True,total=len(rows),done=len(rows),submitted=completed+1))
+                audit.save(db,operation_key('compact-release-',[r['key'],r['fingerprint'],selected['candidate']]),dict(status='submitted',at=stamp(),actor=actor))
+                tracking.save(db,task,status='Submitting',attempted=True)
+                result=await c.post_json('/api/v3/release',dict(guid=release['guid'],indexerId=release['indexerId'],movieId=r['movie_id']))
+                tracking.save(db,task,status='Awaiting Radarr',confirmed=True,download_id=result.get('downloadId') if isinstance(result,dict) else None)
                 report=audit.state(db,KEY)
                 next(x for x in report['rows'] if x['key']==r['key'])['status']='Submitted'
                 audit.save(db,KEY,report);completed+=1
+                progress(db,status='submitting',done=len(rows),submitted=completed)
                 audit.save(db,op,dict(status='completed' if completed==len(rows) else 'partial',completed=completed,actor=actor,at=stamp()))
             except Exception as exc:
+                if task and task.get('attempted'):tracking.save(db,task,status='Needs review',message='Submission response uncertain. Not resent automatically.')
                 audit.save(db,op,dict(status='stopped',completed=completed,actor=actor,at=stamp()))
-                raise ValueError(f'{completed} submitted. Batch stopped; check Downloads before running another check.') from exc
-        audit.save(db,KEY+'-approval',dict(status='complete',active=False,total=len(rows),done=len(rows),submitted=completed))
+                raise ValueError(f'{completed} submitted. Batch stopped; see individual replacement status.') from exc
+        progress(db,status='complete',active=False,total=len(rows),done=len(rows),submitted=completed)
         return completed

@@ -54,7 +54,7 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         c.post_json.assert_not_awaited();c.put_json.assert_not_awaited()
         plex.sessions.return_value=[];c.releases.return_value=[release(approved=False)]
         with patch.object(r.libraries,'arr_clients',return_value=[inst]),patch.object(r.duplicate_actions,'client',return_value=plex):
-            with self.assertRaisesRegex(ValueError,'no longer approved'):await r.approve(self.db,r.token([row]),'admin')
+            with self.assertRaisesRegex(ValueError,'Batch stopped'):await r.approve(self.db,r.token([row]),'admin')
         c.post_json.assert_not_awaited()
     async def test_approved_grab_leaves_monitoring_and_existing_file_intact_and_replay_blocked(self):
         m,c,inst,row=self.setup_ready();plex=AsyncMock();plex.sessions.return_value=[];token=r.token([row])

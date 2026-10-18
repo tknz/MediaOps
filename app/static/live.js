@@ -155,7 +155,7 @@
     const title=item.display_title||item.title||'Unknown title';
     const progress=item.progress==null ? null : pct(item.progress);
     const status=text(item.status||'Unknown').replace(/([a-z])([A-Z])/g,'$1 $2').replace(/_/g,' ');
-    return `<tr>
+    return `<tr id="download-${esc(item.download_id||item.item_key)}">
       <td class="download-name"><strong>${esc(title)}</strong><span class="download-source">${esc(item.source)}${item.quality ? ` · ${esc(item.quality)}` : ''}</span><details class="download-details"><summary>Release details</summary><p>${esc(item.title)}</p>${item.indexer ? `<p>Indexer: ${esc(item.indexer)}</p>` : ''}${item.client ? `<p>${esc(item.client)} · ${esc(item.category||'No category')} · ${esc(item.priority||'Normal')} priority</p>` : ''}${item.size_left_bytes != null ? `<p>${esc(gb(item.size_left_bytes))} remaining</p>` : ''}</details>${item.message ? `<p class="download-warning">${esc(item.message)}</p>` : ''}</td>
       <td><span class="download-state">${esc(status)}</span></td>
       <td class="download-progress">${progress==null ? '<span>Not reported</span>' : `<span>${Math.round(progress)}%</span><progress max="100" value="${progress}" aria-label="Progress for ${esc(title)}"></progress>`}</td>
