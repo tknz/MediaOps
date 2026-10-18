@@ -23,9 +23,11 @@ class SelectionTests(unittest.TestCase):
         big=release(size=29*GB,approved=False,rejections=['27.3 GB is larger than maximum allowed 13.8 GB (for Hellboy)'])
         chosen=r.choose(movie(),[big]);self.assertTrue(chosen['above_target']);self.assertEqual(chosen['bytes'],29*GB)
         self.assertFalse(r.eligible(movie(),big));self.assertTrue(r.eligible(movie(),big,above_target=True))
-        for changes in [dict(rejections=big['rejections']+['English is wanted, but found French']),dict(rejections=['Existing file on disk is of equal or higher preference']),dict(title='Hellboy.2019.2160p.HDR.HEVC'),dict(quality=dict(quality=dict(resolution=2160,modifier='remux'))),dict(customFormatScore=-50),dict(size=59*GB),dict(edition='Extended')]:
+        for changes in [dict(rejections=big['rejections']+['English is wanted, but found French']),dict(rejections=['Existing file on disk is of equal or higher preference']),dict(title='Hellboy.2019.2160p.HDR.HEVC'),dict(quality=dict(quality=dict(resolution=2160,modifier='remux'))),dict(customFormatScore=-50),dict(size=60*GB),dict(edition='Extended')]:
             with self.subTest(changes=changes):self.assertFalse(r.eligible(movie(),dict(big,**changes),above_target=True))
         self.assertFalse(r.choose(movie(),[big,release()])['above_target'])
+        marginal=release(size=59*GB,approved=False,rejections=big['rejections'])
+        self.assertTrue(r.choose(movie(),[marginal])['fallback']);self.assertEqual(r.choose(movie(),[big,marginal])['bytes'],29*GB)
     def test_all_database_operation_ids_fit_postgres_constraint(self):
         limit=LibraryAuditState.__table__.c.key.type.length
         for key in [t.operation_id(dict(key='0:1',fingerprint='x'*64,candidate=dict(key='y'*64))),r.operation_key('compact-release-',{'long':'x'*1000}),r.operation_key('compact-grab-','token'*200)]:self.assertLessEqual(len(key),limit)

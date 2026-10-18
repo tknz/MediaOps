@@ -45,7 +45,7 @@ def eligible(movie, release, *, above_target=False):
     if normal(release.get('edition') or '')!=normal(movie['movieFile'].get('edition') or ''):return False
     size=int(release.get('size') or 0); old=int(movie['movieFile'].get('size') or 0)
     ceiling=policy.ceiling_bytes(movie.get('runtime'),q['resolution'])
-    return bool(size and ceiling and (size<=ceiling or above_target) and size<=old*.8 and old-size>=2_000_000_000)
+    return bool(size and ceiling and size<old and (above_target or (size<=ceiling and size<=old*.8 and old-size>=2_000_000_000)))
 
 def choose(movie, releases):
     candidates=[r for r in releases if eligible(movie,r)]
@@ -57,7 +57,7 @@ def choose(movie, releases):
         above_target=True
     if not candidates:return None
     r=candidates[0]
-    return dict(key=release_key(r),title=r['title'],bytes=r['size'],saving_bytes=movie['movieFile']['size']-r['size'],audio=policy.audio_label(r['title']),format=r['quality']['quality']['name'],codec='HEVC' if re.search(policy.HEVC,r['title']) else 'Not stated',range='SDR label' if re.search(r'(?i)\bSDR\b',r['title']) else 'No HDR label',score=r.get('customFormatScore',0),above_target=above_target,target_bytes=policy.ceiling_bytes(movie.get('runtime'),r['quality']['quality']['resolution']))
+    return dict(key=release_key(r),title=r['title'],bytes=r['size'],saving_bytes=movie['movieFile']['size']-r['size'],audio=policy.audio_label(r['title']),format=r['quality']['quality']['name'],codec='HEVC' if re.search(policy.HEVC,r['title']) else 'Not stated',range='SDR label' if re.search(r'(?i)\bSDR\b',r['title']) else 'No HDR label',score=r.get('customFormatScore',0),fallback=above_target,above_target=r['size']>policy.ceiling_bytes(movie.get('runtime'),r['quality']['quality']['resolution']),target_bytes=policy.ceiling_bytes(movie.get('runtime'),r['quality']['quality']['resolution']))
 
 def row(movie, inst):
     f=movie['movieFile']; q=(f.get('quality') or {}).get('quality') or {}; info=f.get('mediaInfo') or {}
@@ -143,7 +143,7 @@ async def inspect_one(db, selection, instances, *, check_release=True):
     if not check_release:return c,None,r
     releases=await c.releases(movie['id'])
     release=next((x for x in releases if release_key(x)==selection['candidate']),None)
-    if not release or not eligible(movie,release,above_target=bool(r['candidate'].get('above_target'))) or release['size']!=r['candidate']['bytes']:raise ValueError(r['title']+': release is no longer approved. Run the check again.')
+    if not release or not eligible(movie,release,above_target=bool(r['candidate'].get('fallback') or r['candidate'].get('above_target'))) or release['size']!=r['candidate']['bytes']:raise ValueError(r['title']+': release is no longer approved. Run the check again.')
     if audit.state(db,operation_key('compact-release-',[r['key'],r['fingerprint'],selection['candidate']])):raise ValueError(r['title']+': already submitted; check Downloads.')
     return c,release,r
 
