@@ -46,6 +46,27 @@ class SelectionTests(unittest.TestCase):
     def test_title_collision_does_not_attach_other_download(self):
         result=t.reconcile(task(),movie(),[],[grab(sourceTitle='Hellboy.2004.2160p.HEVC')]);self.assertIsNone(result['download_id']);self.assertNotEqual(result['status'],'Imported')
 
+    def test_native_retry_follows_failed_download_to_verified_import(self):
+        entry=task();entry.update(status='Failed',download_id='SABnzbd_nzo_test')
+        failure=grab(eventType='downloadFailed',date='2026-10-17T12:02:00Z')
+        retry=grab(downloadId='SABnzbd_nzo_retry',sourceTitle='Hellboy.2019.2160p.HEVC.5.1',date='2026-10-17T12:02:13Z',data=dict(size=str(12*GB)))
+        m=movie();m['movieFile'].update(id=2,size=11*GB)
+        event=imported(downloadId='SABnzbd_nzo_retry',date='2026-10-17T12:05:00Z')
+        result=t.reconcile(entry,m,[],[event,retry,failure,grab()])
+        self.assertEqual(result['status'],'Imported');self.assertEqual(result['download_id'],'SABnzbd_nzo_retry')
+        self.assertEqual(result['actual_bytes'],11*GB);self.assertEqual(result['retry_count'],1)
+        self.assertEqual(result['requested_candidate'],entry['candidate']);self.assertEqual(result['attempts'][0]['download_id'],entry['download_id'])
+        self.assertEqual(t.reconcile(result,m,[],[event,retry,failure,grab()])['retry_count'],1)
+    def test_retry_ignores_other_movies_unrelated_later_grabs_and_missing_evidence(self):
+        entry=task();entry.update(status='Failed',download_id='SABnzbd_nzo_test')
+        failure=grab(eventType='downloadFailed',date='2026-10-17T12:02:00Z')
+        retry=grab(downloadId='other',sourceTitle='Hellboy.2019.2160p.HEVC',date='2026-10-17T12:02:13Z',data=dict(size=12*GB))
+        for change in [dict(movieId=9),dict(date='2026-10-17T12:05:00Z'),dict(data={}),dict(downloadId=None)]:
+            result=t.reconcile(entry,movie(),[],[failure,dict(retry,**change),grab()])
+            self.assertEqual(result['status'],'Failed');self.assertEqual(result['download_id'],entry['download_id'])
+        result=t.reconcile(entry,movie(),[dict(movieId=1,downloadId='other',status='completed')],[failure,retry,grab()])
+        self.assertEqual(result['status'],'Importing');self.assertNotEqual(result['status'],'Imported')
+
 class PersistenceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.engine=create_engine('sqlite://');Base.metadata.create_all(self.engine);self.db=Session(self.engine)
@@ -71,6 +92,18 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         row=self.ready();entry=t.reserve(self.db,[row],'admin')[0];t.save(self.db,entry,status='Downloading',attempted=True,download_id='SABnzbd_nzo_test');c=AsyncMock();c.movies.side_effect=TimeoutError()
         with patch.object(t.libraries,'arr_clients',return_value=[dict(index=0,name='Main',client=c)]):await t.refresh(self.db)
         result=t.tasks(self.db)[0];self.assertEqual(result['status'],'Downloading');self.assertIn('unavailable',result['tracking_error']);c.post_json.assert_not_awaited()
+
+    async def test_refresh_revisits_failed_jobs_and_records_native_retry_without_submitting(self):
+        entry=task();entry.update(status='Failed',download_id='SABnzbd_nzo_test');a.save(self.db,entry['id'],entry)
+        m=movie();m['movieFile'].update(id=2,size=11*GB)
+        events=[grab(eventType='downloadFailed',date='2026-10-17T12:02:00Z'),
+            grab(downloadId='retry',sourceTitle='Hellboy.2019.2160p.HEVC.5.1',date='2026-10-17T12:02:13Z',data=dict(size=12*GB)),
+            imported(downloadId='retry',date='2026-10-17T12:05:00Z')]
+        c=AsyncMock();c.movies.return_value=[m];c.get.side_effect=lambda path,**kw:dict(records=[],totalRecords=0) if path.endswith('/queue') else events
+        with patch.object(t,'now',return_value='2026-10-17T12:06:00'),patch.object(t.libraries,'arr_clients',return_value=[dict(index=0,name='Main',client=c)]):
+            self.assertTrue(await t.refresh(self.db))
+        result=t.tasks(self.db)[0];self.assertEqual(result['status'],'Imported');self.assertEqual(result['retry_count'],1)
+        c.post_json.assert_not_awaited();c.put_json.assert_not_awaited();c.delete.assert_not_awaited()
 
 class CurrentInventoryTests(unittest.IsolatedAsyncioTestCase):
     setUp=PersistenceTests.setUp

@@ -1,10 +1,11 @@
 """Durable replacement operations, correlated to native grab and import history."""
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from sqlalchemy import select
 from ..models import LibraryAuditState
-from . import library_audit as audit, libraries
+from . import library_audit as audit, libraries, compact_policy as policy
 
 PREFIX='compact-task-'
 
@@ -42,12 +43,44 @@ def time_value(value):
     try:return datetime.fromisoformat(str(value).replace('Z','+00:00')).replace(tzinfo=timezone.utc).timestamp()
     except (ValueError,TypeError):return 0
 
+def retry_candidate(task, grab):
+    """Display a native retry without discarding the originally approved release."""
+    title=grab['sourceTitle'];size=int((grab.get('data') or {}).get('size') or 0)
+    quality=(grab.get('quality') or {}).get('quality') or {}
+    return dict(key=hashlib.sha256(json.dumps([grab['downloadId'],title]).encode()).hexdigest(),title=title,bytes=size,
+        saving_bytes=task['original_bytes']-size,audio=policy.audio_label(title),format=quality.get('name','Radarr retry'),
+        codec='HEVC' if re.search(policy.HEVC,title) else 'Not stated',range='HDR label' if re.search(policy.HDR,title) else 'No HDR label',
+        score=int((grab.get('data') or {}).get('customFormatScore') or 0),fallback=False,above_target=False,target_bytes=None)
+
+
+def follow_retries(result, history):
+    # Native failed-download handling emits the next grab immediately. Do not adopt an
+    # unrelated later search, another movie, or an unconfirmed download-client response.
+    for _ in range(len(history)):
+        did=result.get('download_id')
+        if not did:break
+        failed=next((h for h in history if h.get('downloadId')==did and h.get('eventType')=='downloadFailed'),None)
+        if not failed:break
+        successors=sorted([h for h in history if h.get('eventType')=='grabbed' and h.get('movieId')==result['movie_id'] and
+            h.get('downloadId') and h['downloadId']!=did and h.get('sourceTitle') and int((h.get('data') or {}).get('size') or 0)>0 and
+            0<=time_value(h.get('date'))-time_value(failed.get('date'))<=120],key=lambda h:time_value(h.get('date')))
+        if not successors:break
+        grab=successors[0]
+        attempts=list(result.get('attempts',[]))
+        if any(a['download_id']==grab['downloadId'] for a in attempts):break
+        attempts.append(dict(download_id=did,status='Failed',finished_at=failed.get('date'),title=result['candidate']['title']))
+        result.setdefault('requested_candidate',dict(result['candidate']))
+        result.update(attempts=attempts,download_id=grab['downloadId'],candidate=retry_candidate(result,grab),retry_count=len(attempts),progress=None)
+    return result
+
+
 def reconcile(task,movie,queue,history):
     result=dict(task,checked_at=now(),tracking_error=None)
-    relevant=[h for h in history if time_value(h.get('date'))>=time_value(task['approved_at'])-5]
+    relevant=[h for h in history if time_value(h.get('date'))>=time_value(task['approved_at'])-5 and h.get('movieId',task['movie_id'])==task['movie_id']]
     # Match the exact proposed release and grab epoch before trusting a download ID.
     grab=next((h for h in sorted(relevant,key=lambda x:x.get('date',''),reverse=True) if h.get('eventType')=='grabbed' and h.get('sourceTitle')==task['candidate']['title'] and h.get('downloadId')),None)
     if not result.get('download_id') and grab:result['download_id']=grab['downloadId']
+    result=follow_retries(result,relevant)
     did=result.get('download_id')
     matching=[h for h in relevant if did and h.get('downloadId')==did]
     imports=[h for h in matching if h.get('eventType')=='downloadFolderImported']
@@ -56,7 +89,7 @@ def reconcile(task,movie,queue,history):
         data=imported.get('data') or {};file_id=data.get('fileId') or data.get('movieFileId')
         # Download completion is insufficient: require native import + the imported file still present.
         if f.get('id') and ((file_id and str(file_id)==str(f['id'])) or (not file_id and data.get('importedPath')==f.get('path') and int(data.get('size') or -1)==int(f.get('size') or 0))):
-            result.update(status='Imported',progress=100,finished_at=imported.get('date'),file_id=f['id'],actual_bytes=f.get('size'),actual_saving_bytes=task['original_bytes']-int(f.get('size') or 0),message=None)
+            result.update(status='Imported',progress=100,finished_at=imported.get('date'),file_id=f['id'],actual_bytes=f.get('size'),actual_saving_bytes=task['original_bytes']-int(f.get('size') or 0),message='Imported Radarr retry; original failed attempt retained.' if result.get('retry_count') else None)
             return result
     q=next((x for x in queue if did and x.get('downloadId')==did and x.get('movieId')==task['movie_id']),None)
     if q:
@@ -64,7 +97,7 @@ def reconcile(task,movie,queue,history):
         result['status']='Import blocked' if state in ('importblocked','importfailed') or (warnings and str(q.get('trackedDownloadStatus')).lower() in ('warning','error')) else 'Importing' if state in ('importpending','importing','downloadfinished') or status=='completed' else 'Downloading' if status=='downloading' else 'Paused' if status=='paused' else 'Queued'
         size=float(q.get('size') or 0);left=float(q.get('sizeleft') or 0)
         result['progress']=round(max(0,min(100,100*(size-left)/size)),1) if size else None
-        result['message']='Review the import in Radarr.' if result['status']=='Import blocked' else None
+        result['message']='Review the import in Radarr.' if result['status']=='Import blocked' else 'Radarr retry' if result.get('retry_count') else None
         return result
     failed=next((h for h in matching if h.get('eventType')=='downloadFailed'),None)
     if failed:result.update(status='Failed',message='Radarr reported a failed download. Current file kept.')
@@ -76,7 +109,8 @@ def reconcile(task,movie,queue,history):
 
 async def refresh(db):
     legacy_import(db)
-    pending=[t for t in tasks(db) if t.get('attempted') and t['status'] not in ('Imported','Failed')]
+    pending=[t for t in tasks(db) if t.get('attempted') and t['status']!='Imported' and
+        (t['status']!='Failed' or time_value(now())-time_value(t['approved_at'])<7*86400)]
     if not pending:return False
     imported_now=False
     for inst in libraries.arr_clients('radarr'):

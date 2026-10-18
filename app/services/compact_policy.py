@@ -46,7 +46,7 @@ def spec(implementation, value, *, negate=False, name=None):
 
 def formats():
     return [
-        (dict(name='Compact - Reject HDR',specifications=[spec('ReleaseTitleSpecification',HDR)]),REJECT_SCORE),
+        (dict(name='Compact - Prefer SDR',specifications=[spec('ReleaseTitleSpecification',HDR)]),-25),
         (dict(name='Compact - Reject remux and disc',specifications=[spec('QualityModifierSpecification',5,name='Remux'),spec('QualityModifierSpecification',4,name='Disc')]),REJECT_SCORE),
         (dict(name='Compact - Require HEVC for 4K',specifications=[spec('ResolutionSpecification',2160),spec('ReleaseTitleSpecification',HEVC,negate=True)]),REJECT_SCORE),
         (dict(name='Compact - Prefer stereo',specifications=[spec('ReleaseTitleSpecification',STEREO)]),20),

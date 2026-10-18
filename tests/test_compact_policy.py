@@ -22,5 +22,7 @@ class CompactPolicyTests(unittest.TestCase):
             self.assertTrue(re.search(p.HDR,title))
         self.assertFalse(re.search(p.HDR,'Film.2160p.SDR.x265'))
         formats=p.formats();self.assertEqual(len(formats),8)
+        hdr=next(score for value,score in formats if value['name']=='Compact - Prefer SDR');self.assertEqual(hdr,-25)
+        self.assertEqual(next(score for value,score in formats if 'remux' in value['name']),p.REJECT_SCORE)
         reject=next(v for v,score in formats if 'remux' in v['name'])
         self.assertEqual([s['fields'][0]['value'] for s in reject['specifications']],[5,4])
