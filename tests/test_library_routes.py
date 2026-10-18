@@ -37,14 +37,35 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/libraries/space').status_code,403)
         with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)):
             self.assertEqual(self.client.get('/libraries/space').status_code,403)
+    def test_replacement_scope_roundtrip_and_completion_history(self):
+        from app.services import replacements as r,replacement_tracking as t
+        from test_replacement_tracking import task
+        saved=task();saved.update(status='Imported',actual_bytes=10_000_000_000,actual_saving_bytes=50_000_000_000)
+        save(self.db,saved['id'],saved)
+        with patch.object(main,'current_user',return_value=self.user),patch.object(r,'current_rows',AsyncMock(return_value=[])) as inventory,patch.object(main.scheduler,'add_job') as scheduled:
+            params='q=Irishman&source=Custom+Cinema&min_gb=25&managed=managed'
+            html=self.client.get('/libraries/replacements?'+params)
+            self.assertEqual(html.status_code,200);self.assertIn('source=Custom+Cinema',html.text)
+            inventory.assert_awaited_with(self.db,q='Irishman',source='Custom Cinema',min_gb=25,managed='managed')
+            api=self.client.get('/api/libraries/replacements?'+params).json()
+            self.assertEqual(api['filters']['source'],'Custom Cinema')
+            self.assertEqual(self.client.get('/api/libraries/replacements?min_gb=-1').status_code,422)
+            response=self.client.post('/libraries/replacements/scan?'+params,headers={'Origin':'http://testserver'},follow_redirects=False)
+            self.assertEqual(response.status_code,303);self.assertIn('source=Custom+Cinema',response.headers['location'])
+            self.assertEqual(scheduled.call_args.kwargs['kwargs']['q'],'Irishman')
+            pending=self.client.get('/libraries/replacements/jobs')
+            self.assertNotIn('id="'+saved['id']+'"',pending.text)
+            history=self.client.get('/libraries/replacements/jobs?view=complete')
+            self.assertIn('id="'+saved['id']+'"',history.text)
+
     def test_replacements_html_api_batch_review_and_auth(self):
         from app.services import replacements as r
         candidate=dict(key='candidate',title='Movie.2020.2160p.HEVC.SDR.AAC2.0',bytes=10_000_000_000,saving_bytes=40_000_000_000,audio='Stereo',format='WEBDL-2160p',codec='HEVC',range='SDR label')
         row=dict(key='0:1',index=0,movie_id=1,fingerprint='file',source='Radarr',title='Movie',year=2020,monitored=False,bytes=50_000_000_000,format='Remux-2160p',codec='HEVC',hdr='HDR10',status='Ready',candidate=candidate)
         save(self.db,r.KEY,dict(rows=[row],status='complete',done=1,checked_at=datetime.utcnow().isoformat()))
-        with patch.object(main,'current_user',return_value=self.user):
+        with patch.object(main,'current_user',return_value=self.user),patch.object(r,'current_rows',AsyncMock(return_value=[(dict(row,managed=True),None)])):
             html=self.client.get('/libraries/replacements');self.assertEqual(html.status_code,200,html.text)
-            self.assertIn('Unmonitored',html.text);self.assertIn('Largest 50 movies',html.text);self.assertIn('Stereo',html.text)
+            self.assertIn('Unmonitored',html.text);self.assertIn('Largest movies',html.text);self.assertIn('Stereo',html.text)
             api=self.client.get('/api/libraries/replacements').json();self.assertEqual(api['ready'],1);self.assertEqual(api['saving_bytes'],40_000_000_000)
             with patch.object(r,'approve',AsyncMock()) as approve:
                 review=self.client.post('/libraries/replacements/review',data={'selection':'0:1'},headers={'Origin':'http://testserver'})

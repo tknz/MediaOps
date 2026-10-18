@@ -8,7 +8,7 @@ import re
 import secrets
 from zoneinfo import ZoneInfo
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
-from fastapi import FastAPI, Request, Depends, Form, Body, HTTPException
+from fastapi import FastAPI, Request, Depends, Form, Body, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi.templating import Jinja2Templates
@@ -403,12 +403,13 @@ async def scheduled_replacement_approval(confirmation, actor):
 
 async def scheduled_replacement_tracking():
     with SessionLocal() as db:
-        await replacement_tracking.refresh(db)
+        if await replacement_tracking.refresh(db):
+            await library_summary.summary(db,refresh=True)
 
 
-async def scheduled_replacements():
+async def scheduled_replacements(**filters):
     with SessionLocal() as db:
-        await replacements.scan(db)
+        await replacements.scan(db,**filters)
 
 
 async def scheduled_library_inventory():
@@ -3146,32 +3147,35 @@ async def library_audit_run(request: Request, audit: str = Form(...), view: str 
 
 
 @app.get('/api/libraries/replacements')
-def replacements_api(db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+async def replacements_api(q: str='', source: str='all', min_gb: float=Query(0,ge=0,le=100000), managed: str='all', db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     if not context.is_admin:raise HTTPException(403,'Admin required')
-    return replacements.payload(db)
+    return await replacements.current_payload(db,q=q,source=source,min_gb=min_gb,managed=managed)
 
 
 @app.get('/libraries/replacements/jobs', response_class=HTMLResponse)
-def replacement_jobs_page(request: Request, db: Session = Depends(get_db)):
+def replacement_jobs_page(request: Request, view: str='pending', db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user or not user.is_admin:raise HTTPException(403,'Admin required')
-    return templates.TemplateResponse('replacement_jobs.html',dict(request=request,user=user,operations=replacement_tracking.summary(db),approval=library_audit.state(db,replacements.KEY+'-approval') or {}))
+    operations=replacement_tracking.summary(db)
+    view=view if view in ('pending','complete','all') else 'pending'
+    operations['rows']=[t for t in operations['rows'] if view=='all' or (t['status']=='Imported')==(view=='complete')]
+    return templates.TemplateResponse('replacement_jobs.html',dict(request=request,user=user,view=view,operations=operations,approval=library_audit.state(db,replacements.KEY+'-approval') or {}))
 
 
 @app.get('/libraries/replacements', response_class=HTMLResponse)
-def replacements_page(request: Request, db: Session = Depends(get_db)):
+async def replacements_page(request: Request, q: str='', source: str='all', min_gb: float=Query(0,ge=0,le=100000), managed: str='all', db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user or not user.is_admin:raise HTTPException(403,'Admin required')
-    return templates.TemplateResponse('replacements.html',dict(request=request,user=user,report=replacements.payload(db)))
+    return templates.TemplateResponse('replacements.html',dict(request=request,user=user,report=await replacements.current_payload(db,q=q,source=source,min_gb=min_gb,managed=managed)))
 
 
 @app.post('/libraries/replacements/scan')
-async def replacements_scan(request: Request, db: Session = Depends(get_db)):
+async def replacements_scan(request: Request, q: str='', source: str='all', min_gb: float=Query(0,ge=0,le=100000), managed: str='all', db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user or not user.is_admin:raise HTTPException(403,'Admin required')
     if not replacements.scan_lock.locked() and not replacements.action_lock.locked():
-        scheduler.add_job(scheduled_replacements,'date',run_date=datetime.utcnow(),id='compact-replacements-manual',replace_existing=True)
-    return RedirectResponse('/libraries/replacements',status_code=303)
+        scheduler.add_job(scheduled_replacements,'date',run_date=datetime.utcnow(),id='compact-replacements-manual',replace_existing=True,kwargs=dict(q=q,source=source,min_gb=min_gb,managed=managed))
+    return RedirectResponse('/libraries/replacements?'+urlencode(dict(q=q,source=source,min_gb=min_gb,managed=managed)),status_code=303)
 
 
 @app.post('/libraries/replacements/review', response_class=HTMLResponse)

@@ -67,9 +67,9 @@ def choose(movie, releases):
 
 def row(movie, inst):
     f=movie['movieFile']; q=(f.get('quality') or {}).get('quality') or {}; info=f.get('mediaInfo') or {}
-    return dict(key=f"{inst['index']}:{movie['id']}",source=inst['name'],index=inst['index'],movie_id=movie['id'],title=movie['title'],year=movie.get('year'),monitored=movie.get('monitored',False),bytes=f.get('size',0),format=q.get('name','Unknown'),codec=info.get('videoCodec','Unknown'),hdr=info.get('videoDynamicRangeType') or info.get('videoDynamicRange') or 'Unknown',fingerprint=file_stamp(movie),candidate=None,status='Waiting')
+    return dict(key=f"{inst['index']}:{movie['id']}",source=inst['name'],index=inst['index'],movie_id=movie['id'],title=movie['title'],year=movie.get('year'),monitored=movie.get('monitored',False),bytes=f.get('size',0),format=q.get('name','Unknown'),codec=info.get('videoCodec','Unknown'),file_id=f.get('id'),hdr=info.get('videoDynamicRangeType') or info.get('videoDynamicRange') or 'Unknown',fingerprint=file_stamp(movie),candidate=None,status='Waiting')
 
-async def inventory(instances):
+async def inventory(instances, *, limit=True):
     values=[]
     for inst in instances:
         definitions,profiles=await asyncio.gather(inst['client'].get('/api/v3/qualitydefinition'),inst['client'].get('/api/v3/qualityprofile'))
@@ -77,7 +77,96 @@ async def inventory(instances):
             if movie.get('movieFile',{}).get('size'):
                 native_constraints(movie,definitions,profiles)
                 values.append((inst,movie))
-    return sorted(values,key=lambda item:(-item[1]['movieFile']['size'],item[0]['index'],item[1]['id']))[:policy.preferences()['replacement_scan_limit']]
+    values=sorted(values,key=lambda item:(-item[1]['movieFile']['size'],item[0]['index'],item[1]['id']))
+    return values[:policy.preferences()['replacement_scan_limit']] if limit else values
+
+
+async def current_rows(db, *, q='', source='all', min_gb=0, managed='all'):
+    """Use the same Plex files as Large files; require a unique Arr file match."""
+    if not 0 <= min_gb <= 100000:raise ValueError('Invalid minimum size.')
+    entries=await inventory(libraries.arr_clients('radarr'),limit=False)
+    catalogue=libraries.plex_catalogue(db)
+    files=[f for f in catalogue.get('files',[]) if f['kind']=='movie']
+    values=[];by_id={};plex_by_id={}
+    for f in files:plex_by_id.setdefault(f.get('tmdb_id'),[]).append(f)
+    for inst,movie in entries:by_id.setdefault(movie.get('tmdbId'),[]).append((inst,movie))
+    if catalogue:
+        for f in files:
+            matches=[]
+            for inst,movie in by_id.get(f.get('tmdb_id'),[]):
+                mf=movie['movieFile'];relative=mf.get('relativePath')
+                folder=str(movie.get('path') or '').rstrip('/').rsplit('/',1)[-1]
+                suffix='/'+folder+'/'+str(relative or '').lstrip('/')
+                if f.get('tmdb_id') and f['tmdb_id']==movie.get('tmdbId') and folder and relative and f['path'].endswith(suffix):
+                    matches.append((inst,movie))
+            unique_file=False
+            if len(matches)==1:
+                inst,movie=matches[0]
+                suffix='/'+str(movie.get('path') or '').rstrip('/').rsplit('/',1)[-1]+'/'+str(movie['movieFile'].get('relativePath') or '').lstrip('/')
+                unique_file=sum(other['path'].endswith(suffix) for other in plex_by_id.get(f.get('tmdb_id'),[]))==1
+            if unique_file:
+                inst,movie=matches[0];item=row(movie,inst)
+                item.update(plex_path=f['path'],plex_sources=f['sources'])
+                if int(f['bytes'])!=int(item['bytes']):
+                    item.update(status='Plex refresh pending',note='Plex and Radarr file sizes differ. Refresh Plex before searching.')
+                    owner=None
+                else:owner=(inst,movie)
+            else:
+                item=dict(key='plex:'+digest(f['path']),title=f['title'],year=f.get('year'),bytes=f['bytes'],source=' / '.join(f['sources']),
+                    monitored=False,format=f['resolution'],codec=f['codec'],hdr='',candidate=None,fingerprint=digest([f['path'],f['bytes']]),
+                    status='Outside Radarr' if not matches else 'File match needs review',plex_path=f['path'],plex_sources=f['sources'])
+                owner=None
+            item['bytes']=f['bytes'];item['managed']=bool(matches)
+            values.append((item,owner))
+    else:
+        values=[(dict(row(m,i),managed=True),(i,m)) for i,m in entries]
+    values=[(r,o) for r,o in values if (not q or normal(q) in normal(r['title']+' '+r.get('plex_path',''))) and
+        (source=='all' or source==r['source'] or source in r.get('plex_sources',[])) and r['bytes']>min_gb*1e9 and
+        (managed=='all' or (managed=='managed')==r['managed'])]
+    values.sort(key=lambda pair:(-pair[0]['bytes'],normal(pair[0]['title']),pair[0]['key']))
+    tasks=tracking.tasks(db)
+    values=[(item,owner) for item,owner in values if not any(completed(task,item) for task in tasks)]
+    return values[:policy.preferences()['replacement_scan_limit']]
+
+
+def completed(task,item):
+    return task.get('key')==item['key'] and task.get('status')=='Imported' and (task.get('fingerprint')==item['fingerprint'] or
+        (task.get('file_id') is not None and task['file_id']==item.get('file_id')))
+
+
+def overlay(report, operations):
+    remaining=[];completed_count=0
+    for item in report['rows']:
+        # Keep confirmed completions in job history, never in the action table.
+        task=next((t for t in operations['rows'] if completed(t,item)),None)
+        if task:completed_count+=1;continue
+        task=next((t for t in operations['rows'] if tracking.blocked(t,item)),None)
+        if task:item.update(status=task['status'],operation=task,candidate=task['candidate'])
+        remaining.append(item)
+    report.update(rows=remaining,completed=completed_count,operations=operations)
+    report['ready']=sum(r['status']=='Ready' for r in remaining)
+    report['saving_bytes']=sum(r['candidate']['saving_bytes'] for r in remaining if r['status']=='Ready')
+    return report
+
+
+async def current_payload(db, **filters):
+    report=payload(db);cached={r['key']:r for r in report['rows']}
+    try:
+        values=await current_rows(db,**filters)
+        rows=[]
+        for item,_ in values:
+            old=cached.get(item['key'])
+            if old and old['fingerprint']==item['fingerprint'] and item['status']=='Waiting':item.update(old)
+            rows.append(item)
+        report['rows']=rows
+        report['inventory_error']=None
+    except Exception:
+        # Fail closed: stale proposals stay visible but cannot be approved.
+        report['inventory_error']='Current inventory unavailable. Search and approval are paused.'
+        for item in report['rows']:
+            if item['status']=='Ready':item.update(status='Inventory unavailable',candidate=None)
+    report['filters']=dict(q=filters.get('q',''),source=filters.get('source','all'),min_gb=filters.get('min_gb',0),managed=filters.get('managed','all'))
+    return overlay(report,tracking.summary(db))
 
 
 def native_constraints(movie,definitions,profiles):
@@ -90,19 +179,23 @@ async def queued(client,movie_id):
     q=await client.get('/api/v3/queue',movieIds=movie_id,pageSize=1)
     return bool(q.get('totalRecords'))
 
-async def scan(db):
+async def scan(db, **filters):
     if scan_lock.locked() or action_lock.locked():return
     async with scan_lock:
         report=dict(started_at=stamp(),checked_at=stamp(),status='running',done=0,rows=[],errors=[])
         audit.save(db,KEY,report)
         try:
-            entries=await inventory(libraries.arr_clients('radarr'))
-            report['rows']=[row(m,i) for i,m in entries];audit.save(db,KEY,report)
-            for number,(inst,movie) in enumerate(entries):
+            entries=await current_rows(db,**filters)
+            report['rows']=[r for r,_ in entries];audit.save(db,KEY,report)
+            for number,(result,owner) in enumerate(entries):
                 result=report['rows'][number]
                 try:
-                    if await queued(inst['client'],movie['id']):result['status']='Already downloading'
+                    task=tracking.for_row(db,result)
+                    if task:result.update(status=task['status'],candidate=task['candidate'])
+                    elif owner is None:pass
+                    elif await queued(owner[0]['client'],owner[1]['id']):result['status']='Already downloading'
                     else:
+                        inst,movie=owner
                         releases=await inst['client'].releases(movie['id'])
                         result['candidate']=choose(movie,releases)
                         result['status']='Ready' if result['candidate'] else 'No suitable release'
@@ -123,13 +216,8 @@ def payload(db):
     report['scan_limit']=report['preferences']['replacement_scan_limit']
     for row in report['rows']:
         if row['status']=='No suitable release':row['note']='No approved release meets the replacement rules.'
-    report['operations']=tracking.summary(db)
-    for row in report['rows']:
-        task=next((t for t in report['operations']['rows'] if tracking.blocked(t,row)),None) if row.get('candidate') else None
-        if task:row.update(status=task['status'],operation=task)
     report['approval']=audit.state(db,KEY+'-approval') or {}
-    report['ready']=sum(r['status']=='Ready' for r in report['rows'])
-    report['saving_bytes']=sum(r['candidate']['saving_bytes'] for r in report['rows'] if r['status']=='Ready')
+    overlay(report,tracking.summary(db))
     return report
 
 def selections(db, keys):

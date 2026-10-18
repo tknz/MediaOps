@@ -56,7 +56,7 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         row=self.ready();entry=t.reserve(self.db,[row],'admin')[0]
         with self.assertRaises(ValueError):t.reserve(self.db,[row],'admin')
         changed=copy.deepcopy(row);changed['candidate']['key']='new-release';self.assertIsNotNone(t.for_row(self.db,changed))
-        t.save(self.db,entry,status='Imported');self.assertEqual(r.payload(self.db)['rows'][0]['status'],'Imported')
+        t.save(self.db,entry,status='Imported');self.assertEqual(r.payload(self.db)['rows'],[]);self.assertEqual(t.summary(self.db)['imported'],1)
         changed['fingerprint']='new-file';self.assertIsNone(t.for_row(self.db,changed))
     async def test_legacy_submission_adopted_without_sending(self):
         row=self.ready();a.save(self.db,r.operation_key('compact-release-',[row['key'],row['fingerprint'],row['candidate']['key']]),dict(at='2026-10-17T12:00:00',actor='admin'))
@@ -71,3 +71,59 @@ class PersistenceTests(unittest.IsolatedAsyncioTestCase):
         row=self.ready();entry=t.reserve(self.db,[row],'admin')[0];t.save(self.db,entry,status='Downloading',attempted=True,download_id='SABnzbd_nzo_test');c=AsyncMock();c.movies.side_effect=TimeoutError()
         with patch.object(t.libraries,'arr_clients',return_value=[dict(index=0,name='Main',client=c)]):await t.refresh(self.db)
         result=t.tasks(self.db)[0];self.assertEqual(result['status'],'Downloading');self.assertIn('unavailable',result['tracking_error']);c.post_json.assert_not_awaited()
+
+class CurrentInventoryTests(unittest.IsolatedAsyncioTestCase):
+    setUp=PersistenceTests.setUp
+    tearDown=PersistenceTests.tearDown
+    ready=PersistenceTests.ready
+    def plex_file(self,m,**changes):
+        f=dict(kind='movie',title=m['title'],year=m['year'],tmdb_id=m['tmdbId'],path='/plex/Movies/Hellboy (2019)/film.mkv',bytes=m['movieFile']['size'],sources=['Movies'],resolution='4k',codec='h264')
+        f.update(changes);return f
+    async def test_plex_inventory_and_filters_include_unmanaged_without_actions(self):
+        m=movie();m['path']='/movies/Hellboy (2019)';c=AsyncMock();c.movies.return_value=[m];c.get.return_value=[]
+        inst=dict(index=0,name='Main',client=c)
+        files=[self.plex_file(m),self.plex_file(m,title='Outside',tmdb_id=99,path='/plex/Movies/Outside/film.mkv',bytes=80*GB)]
+        a.save(self.db,'plex-file-catalogue',dict(files=files,complete=True))
+        with patch.object(r.libraries,'arr_clients',return_value=[inst]):
+            values=await r.current_rows(self.db,min_gb=25,source='Movies')
+            self.assertEqual([v[0]['title'] for v in values],['Outside','Hellboy'])
+            self.assertIsNone(values[0][1]);self.assertEqual(values[0][0]['status'],'Outside Radarr')
+            report=await r.current_payload(self.db,q='Hellboy',source='Movies',min_gb=25)
+            self.assertEqual(len(report['rows']),1);self.assertEqual(report['filters']['source'],'Movies')
+        c.post_json.assert_not_awaited();c.delete.assert_not_awaited()
+    async def test_import_hidden_after_file_change_and_uncached_active_job_visible(self):
+        old=self.ready();entry=t.reserve(self.db,[old],'admin')[0]
+        m=movie();m['path']='/movies/Hellboy (2019)';c=AsyncMock();c.movies.return_value=[m];c.get.return_value=[]
+        a.save(self.db,'plex-file-catalogue',dict(files=[self.plex_file(m)],complete=True))
+        # Irishman case: durable task exists but no cached search row.
+        a.save(self.db,r.KEY,dict(rows=[],status='complete',done=0))
+        t.save(self.db,entry,status='Downloading',attempted=True)
+        with patch.object(r.libraries,'arr_clients',return_value=[dict(index=0,name='Main',client=c)]):
+            report=await r.current_payload(self.db)
+            self.assertEqual(report['rows'][0]['status'],'Downloading');self.assertEqual(report['rows'][0]['operation']['id'],entry['id'])
+            self.assertEqual(report['ready'],0)
+            # Completed replacement has a new file identity and current size.
+            m['movieFile'].update(id=5,size=10*GB)
+            t.save(self.db,entry,status='Imported',file_id=5,actual_bytes=10*GB)
+            a.save(self.db,'plex-file-catalogue',dict(files=[self.plex_file(m)],complete=True))
+            report=await r.current_payload(self.db)
+            self.assertEqual(report['rows'],[]);self.assertEqual(report['operations']['imported'],1)
+        c.post_json.assert_not_awaited()
+    async def test_same_title_different_path_and_size_mismatch_cannot_offer(self):
+        m=movie();m['path']='/movies/Hellboy (2019)';c=AsyncMock();c.movies.return_value=[m];c.get.return_value=[];c.releases.return_value=[release()]
+        for f in [self.plex_file(m,path='/plex/Other/Hellboy (2019)/other.mkv'),self.plex_file(m,bytes=70*GB)]:
+            a.save(self.db,'plex-file-catalogue',dict(files=[f],complete=True))
+            with patch.object(r.libraries,'arr_clients',return_value=[dict(index=0,name='Main',client=c)]),patch.object(r.asyncio,'sleep',AsyncMock()):
+                report=await r.scan(self.db)
+                self.assertNotEqual(report['rows'][0]['status'],'Ready');self.assertIsNone(report['rows'][0]['candidate'])
+        c.releases.assert_not_awaited();c.post_json.assert_not_awaited()
+
+    async def test_duplicate_plex_copies_cannot_share_an_arr_action(self):
+        m=movie();m['path']='/movies/Hellboy (2019)';c=AsyncMock();c.movies.return_value=[m];c.get.return_value=[]
+        files=[self.plex_file(m),self.plex_file(m,path='/another/library/Hellboy (2019)/film.mkv')]
+        a.save(self.db,'plex-file-catalogue',dict(files=files,complete=True))
+        with patch.object(r.libraries,'arr_clients',return_value=[dict(index=0,name='Main',client=c)]):
+            rows=await r.current_rows(self.db)
+        self.assertEqual(len(rows),2);self.assertEqual(len({row['key'] for row,_ in rows}),2)
+        self.assertTrue(all(owner is None and row['status']=='File match needs review' for row,owner in rows))
+        c.post_json.assert_not_awaited()

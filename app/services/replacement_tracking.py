@@ -77,7 +77,8 @@ def reconcile(task,movie,queue,history):
 async def refresh(db):
     legacy_import(db)
     pending=[t for t in tasks(db) if t.get('attempted') and t['status'] not in ('Imported','Failed')]
-    if not pending:return
+    if not pending:return False
+    imported_now=False
     for inst in libraries.arr_clients('radarr'):
         batch=[t for t in pending if t['index']==inst['index'] and t['source']==inst['name']]
         if not batch:continue
@@ -100,8 +101,11 @@ async def refresh(db):
                 history=await c.get('/api/v3/history/movie',movieId=task['movie_id'])
                 if not isinstance(history,list):raise ValueError('Incomplete history')
                 current=audit.state(db,task['id']) or task
-                save(db,reconcile(current,movie,queue,history))
+                updated=reconcile(current,movie,queue,history)
+                imported_now=imported_now or updated['status']=='Imported'
+                save(db,updated)
             except Exception:save(db,audit.state(db,task['id']) or task,tracking_error='History unavailable; retaining last known status.')
+    return imported_now
 
 def summary(db):
     values=tasks(db)
