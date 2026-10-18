@@ -106,6 +106,7 @@ def normalise_series(row: dict[str, Any], source: str, index: int) -> dict[str, 
         'available': episodes, 'monitored': bool(row.get('monitored')),
         'quality': f'{episodes}/{total} episodes' if total else f'{episodes} episodes',
         'seasons': stats.get('seasonCount'),
+        'network': row.get('network'),
         'poster': next((img.get('remoteUrl') or img.get('url') for img in (row.get('images') or []) if img.get('coverType') == 'poster'), None),
     }
 
@@ -285,7 +286,7 @@ def calendar_cutoff(months: int, now: datetime | None = None) -> datetime:
     return now.replace(year=y, month=m+1, day=min(now.day, calendar.monthrange(y, m+1)[1]))
 
 
-def browse_page(inventory, q='', kind='all', source='all', preset='', months=24, before='', history='', viewer='', sort='', direction='asc', page=1, page_size=50, now=None):
+def browse_page(inventory, q='', kind='all', source='all', preset='', months=24, before='', history='', viewer='', sort='', direction='asc', page=1, page_size=50, now=None, provider='all'):
     if preset == 'tv-cleanup':
         kind = 'series'
         if not history: history = 'recorded'
@@ -296,6 +297,8 @@ def browse_page(inventory, q='', kind='all', source='all', preset='', months=24,
     direction = direction if direction in ('asc', 'desc') else 'asc'
     history = history if history in ('all', 'recorded', 'unknown', 'include', 'ambiguous') else 'all'
     rows = search_library_items(inventory, q, kind, source, limit=None)
+    from .streaming_availability import matches
+    rows = [i for i in rows if matches(i, provider)]
     if history != 'all':
         rows = [i for i in rows if
                 (history == 'unknown' and i['history_status'] == 'unknown') or
@@ -311,7 +314,7 @@ def browse_page(inventory, q='', kind='all', source='all', preset='', months=24,
     rows = known + unknown
     page_size = max(1, min(200, page_size)); pages = max(1, (len(rows)+page_size-1)//page_size)
     page = max(1, min(pages, page))
-    filters = dict(q=q, kind=kind, source=source, preset=preset, months=months, before=before, history=history, viewer=viewer, sort=sort, direction=direction, page=page, page_size=page_size)
+    filters = dict(q=q, kind=kind, source=source, preset=preset, months=months, before=before, history=history, viewer=viewer, sort=sort, direction=direction, page=page, page_size=page_size, provider=provider)
     def url(n): return '/libraries?' + urlencode(dict(filters, page=n))
     return dict(items=rows[(page-1)*page_size:page*page_size], filters=filters, total_count=len(rows), total_bytes=sum(i['size'] for i in rows),
                 total_bytes_label=format_bytes(sum(i['size'] for i in rows)), page=page, pages=pages, cutoff=cutoff.isoformat(),
@@ -334,7 +337,7 @@ async def plex_libraries(values: dict[str, str] | None = None) -> list[dict[str,
     return libs
 
 
-async def library_inventory(db: Session, values: dict[str, str] | None = None, viewer: str = '') -> tuple[list[dict[str, Any]], list[str]]:
+async def library_inventory(db: Session, values: dict[str, str] | None = None, viewer: str = '', include_usage: bool = True) -> tuple[list[dict[str, Any]], list[str]]:
     inventory: list[dict[str, Any]] = []
     errors: list[str] = []
     for inst in arr_clients('radarr', values):
@@ -349,7 +352,9 @@ async def library_inventory(db: Session, values: dict[str, str] | None = None, v
             inventory += [normalise_series(row, inst['name'], inst['index']) for row in series]
         except Exception as exc:
             errors.append(f"{inst['name']}: {exc}")
-    enrich_inventory_usage(db, inventory, viewer)
+    if include_usage: enrich_inventory_usage(db, inventory, viewer)
+    from .streaming_availability import attach
+    attach(db, inventory, values)
     return inventory, errors
 
 
@@ -569,11 +574,17 @@ async def browse_libraries_payload(db: Session, q: str = '', kind: str = 'all', 
     except Exception:
         libs = []
     inventory, errors = await library_inventory(db, cfg, options.get('viewer', ''))
+    from . import streaming_availability as streaming
+    streaming.attach(db, inventory, cfg)
     result = browse_page(inventory, q, kind, source, **options)
     selected_item = selected_library_item(inventory, q, kind, source) if not options.get('preset') else None
+    if selected_item and not streaming.matches(selected_item, options.get('provider', 'all')): selected_item = None
     viewers = list(db.scalars(select(PlexSession.username).distinct().order_by(PlexSession.username)))
     return {
         **result, 'viewers': viewers,
+        'streaming_region': streaming.region(cfg),
+        'streaming_providers': [dict(id=k, name=v) for k,v in sorted({p['id']:p['name'] for i in inventory if i['streaming']['status']=='known' for p in i['streaming']['providers']}.items(), key=lambda p:p[1])],
+        'streaming_coverage': dict(known=sum(i['streaming']['status']=='known' for i in inventory), total=len(inventory)),
         'coverage': 'Recorded playback sessions, not completed episodes. Missing/import-incomplete history cannot prove never watched. Ambiguous title identities are excluded from stale results. Active playback is excluded from the cleanup preset; live status can lag.',
         'libraries': [library_item_payload(lib) for lib in libs],
         'items': [library_item_payload(item) for item in result['items']],

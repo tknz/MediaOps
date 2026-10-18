@@ -39,8 +39,11 @@ from .services.local_auth import hash_password, local_auth_configured, local_ple
 from .services.integration_tokens import DEFAULT_HOMEASSISTANT_SCOPES, active_integration_tokens, issue_integration_token, revoke_integration_token
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
-from .services import library_audit, library_summary, download_controls, duplicate_actions, space_review, compact_policy
+from .services import job_engine
+from .services.job_registry import SCHEDULE_DEFAULTS
+from .services import library_audit, library_summary, download_controls, duplicate_actions, space_review, compact_policy, streaming_availability, library_actions
 from .integrations import router as integrations_router
+from .operations import router as operations_router, queue_replacement_approval
 from .services.webhooks import notify_homeassistant
 
 
@@ -164,10 +167,11 @@ def seerr_policy_from_permissions(value: int):
     }
 
 app = FastAPI(title=settings.app_name)
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone='UTC')
 app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, same_site='lax', https_only=settings.base_url.startswith('https://'))
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 app.include_router(integrations_router)
+app.include_router(operations_router)
 templates = Jinja2Templates(directory='app/templates')
 templates.env.globals['media_server_label'] = media_server_label
 
@@ -291,6 +295,7 @@ def dedupe_requests(rows):
     return sorted(best.values(), key=lambda r: r.requested_at, reverse=True)
 
 
+@job_engine.tracked('request-sync')
 async def scheduled_request_sync():
     with SessionLocal() as db:
         changed = await sync_requests(db)
@@ -299,11 +304,13 @@ async def scheduled_request_sync():
             await notify_homeassistant('requests_changed', {'changed': changed, 'pending_requests': int(pending)})
 
 
+@job_engine.tracked('plex-account-refresh')
 async def scheduled_plex_account_refresh():
     with SessionLocal() as db:
         await refresh_plex_accounts(db)
 
 
+@job_engine.tracked('plex-poll')
 async def scheduled_plex_poll():
     cfg = all_settings()
     if not cfg.get('plex_server_url') or not cfg.get('plex_server_token'):
@@ -315,6 +322,7 @@ async def scheduled_plex_poll():
         await enforce_policies(db, client, sessions)
 
 
+@job_engine.tracked('downloads-poll')
 async def scheduled_downloads_poll():
     cfg = all_settings()
     queue = []
@@ -366,6 +374,7 @@ library_health_lock = asyncio.Lock()
 library_storage_lock = asyncio.Lock()
 
 
+@job_engine.tracked('library-health')
 async def scheduled_library_health():
     if library_health_lock.locked():
         return
@@ -381,6 +390,7 @@ async def run_library_health():
             library_audit.save(db, 'health-notified', {'checked_at': report['checked_at']})
 
 
+@job_engine.tracked('library-storage')
 async def scheduled_library_storage():
     if library_storage_lock.locked():
         return
@@ -389,6 +399,7 @@ async def scheduled_library_storage():
             await library_audit.storage_audit(db)
 
 
+@job_engine.tracked('compact-replacement-approval')
 async def scheduled_replacement_approval(confirmation, actor):
     with SessionLocal() as db:
         try:await replacements.approve(db,confirmation,actor)
@@ -401,69 +412,45 @@ async def scheduled_replacement_approval(confirmation, actor):
                 if task['status']=='Approved' and not task.get('attempted'):replacement_tracking.save(db,task,status='Not submitted',message=message)
 
 
+@job_engine.tracked('compact-replacement-tracking')
 async def scheduled_replacement_tracking():
     with SessionLocal() as db:
         if await replacement_tracking.refresh(db):
             await library_summary.summary(db,refresh=True)
 
 
+@job_engine.tracked('compact-replacements')
 async def scheduled_replacements(**filters):
+    if replacements.scan_lock.locked() or replacements.action_lock.locked(): raise job_engine.JobBusy()
     with SessionLocal() as db:
         await replacements.scan(db,**filters)
 
 
+@job_engine.tracked('streaming-availability')
+async def scheduled_streaming_availability(full=False):
+    with SessionLocal() as db:
+        await streaming_availability.refresh(db, limit=None if full else 100, force=full)
+
+
+@job_engine.tracked('library-inventory')
 async def scheduled_library_inventory():
     with SessionLocal() as db:
         await library_summary.summary(db,refresh=True)
 
 
 def configure_scheduler() -> None:
-    job_values = scheduler_values()
     with SessionLocal() as db:
-        health_due = library_audit.next_run(db, 'health', timedelta(minutes=15))
-        storage_due = library_audit.next_run(db, 'storage', timedelta(weeks=1))
-        replacements_due = library_audit.next_run(db, replacements.KEY, timedelta(weeks=1))
-        if (library_audit.state(db,replacements.KEY) or {}).get('status')=='running':replacements_due=datetime.utcnow()
         approval=library_audit.state(db,replacements.KEY+'-approval') or {}
         if approval.get('active'):
             if approval.get('plan'):
                 scheduler.add_job(scheduled_replacement_approval,'date',run_date=datetime.utcnow()+timedelta(seconds=3),id='compact-replacement-approval',replace_existing=True,args=[None,approval.get('actor','admin')])
             else:library_audit.save(db,replacements.KEY+'-approval',dict(approval,status='interrupted',active=False,message='App restarted. See replacement status before approving more.'))
-    scheduler.add_job(scheduled_replacement_tracking,'interval',seconds=30,id='compact-replacement-tracking',replace_existing=True,max_instances=1,coalesce=True,next_run_time=datetime.utcnow()+timedelta(seconds=2))
-    scheduler.add_job(scheduled_replacements, 'interval', weeks=1, id='compact-replacements', replace_existing=True, max_instances=1, coalesce=True, next_run_time=replacements_due)
-    scheduler.add_job(scheduled_library_inventory, 'interval', minutes=10, id='library-inventory', replace_existing=True, max_instances=1, coalesce=True, next_run_time=datetime.utcnow()+timedelta(seconds=1))
-    scheduler.add_job(scheduled_library_health, 'interval', minutes=15, id='library-health', replace_existing=True, max_instances=1, coalesce=True, next_run_time=health_due)
-    scheduler.add_job(scheduled_library_storage, 'interval', weeks=1, id='library-storage', replace_existing=True, max_instances=1, coalesce=True, next_run_time=storage_due)
-    scheduler.add_job(scheduled_request_sync, 'interval', minutes=job_values['requests_minutes'], id='request-sync', replace_existing=True, next_run_time=datetime.utcnow())
-    scheduler.add_job(scheduled_plex_poll, 'interval', seconds=job_values['plex_live_seconds'], id='plex-poll', replace_existing=True, next_run_time=datetime.utcnow())
-    scheduler.add_job(scheduled_downloads_poll, 'interval', seconds=job_values['downloads_seconds'], id='downloads-poll', replace_existing=True, next_run_time=datetime.utcnow())
-    scheduler.add_job(scheduled_plex_account_refresh, 'interval', minutes=job_values['plex_accounts_minutes'], id='plex-account-refresh', replace_existing=True, next_run_time=datetime.utcnow())
+    job_engine.install(scheduler, globals())
 
 
-def scheduler_context() -> list[dict]:
-    labels = {
-        'plex-poll': ('Plex live sessions', 'Keeps live sessions, devices, session endings and policy enforcement current.'),
-        'downloads-poll': ('Download queue', 'Checks Radarr and Sonarr queue state for the operations banner and live view.'),
-        'plex-account-refresh': ('Plex accounts', 'Refreshes Plex friends, shared access metadata, profile fields and visible watchlist data.'),
-        'request-sync': ('Request sync', 'Imports Seerr requests and updates availability and size from Radarr/Sonarr.'),
-    }
-    units = {'plex-poll': 'seconds', 'downloads-poll': 'seconds', 'plex-account-refresh': 'minutes', 'request-sync': 'minutes'}
-    setting_names = {'plex-poll': 'job_plex_live_seconds', 'downloads-poll': 'job_downloads_seconds', 'plex-account-refresh': 'job_plex_accounts_minutes', 'request-sync': 'job_requests_minutes'}
-    values = all_settings()
-    rows = []
-    for job_id in ['plex-poll', 'downloads-poll', 'plex-account-refresh', 'request-sync']:
-        job = scheduler.get_job(job_id)
-        label, description = labels[job_id]
-        rows.append({
-            'id': job_id,
-            'label': label,
-            'description': description,
-            'setting': setting_names[job_id],
-            'unit': units[job_id],
-            'value': values.get(setting_names[job_id], ''),
-            'next_run': job.next_run_time if job else None,
-        })
-    return rows
+def scheduler_context(db=None) -> list[dict]:
+    if db is not None: return job_engine.listing(db)
+    with SessionLocal() as session: return job_engine.listing(session)
 
 
 TAUTULLI_BOOTSTRAP_FINGERPRINT_KEY = 'tautulli_api_bootstrap_fingerprint'
@@ -498,6 +485,7 @@ def tautulli_import_ok(result) -> bool:
     return bool(message and not message.startswith('Tautulli URL') and not message.startswith('Tautulli API did not'))
 
 
+@job_engine.tracked('tautulli-history')
 async def tautulli_initial_sync_job(fingerprint: str, url: str, api_key: str) -> None:
     with SessionLocal() as db:
         set_app_setting(db, TAUTULLI_BOOTSTRAP_STATUS_KEY, 'Syncing Tautulli history and bandwidth estimates...')
@@ -546,7 +534,7 @@ def settings_template_context(request: Request, values: dict, user, db: Session 
         'local_auth_configured': local_auth_configured(values),
         'user': user,
         'services': service_context(values),
-        'jobs': scheduler_context(),
+        'jobs': scheduler_context(db),
         'setup_token': request.session.get('setup_token') or '',
         'test': {'kind': test_kind, 'ok': test_ok, 'message': test_message},
         'import_result': {'ok': import_ok, 'message': import_message},
@@ -1478,6 +1466,10 @@ async def _settings_from_form(request: Request) -> dict:
     form = await request.form()
     def first(name, default=''):
         return str(form.get(name, default) or '')
+    try:
+        streaming_country = streaming_availability.region({'streaming_region': first('streaming_region', all_settings().get('streaming_region','NZ'))})
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     radarr = []
     for name, url, key in zip(form.getlist('radarr_name'), form.getlist('radarr_url_multi'), form.getlist('radarr_api_key_multi')):
         if str(name or url or key).strip():
@@ -1500,6 +1492,7 @@ async def _settings_from_form(request: Request) -> dict:
         'sonarr_api_key': sonarr[0]['api_key'] if sonarr else first('sonarr_api_key'),
         'radarr_instances': json.dumps(radarr),
         'sonarr_instances': json.dumps(sonarr),
+        'streaming_region': streaming_country,
         'space_review_min_gb': first('space_review_min_gb', all_settings().get('space_review_min_gb','25')),
         'job_plex_live_seconds': first('job_plex_live_seconds', '30'),
         'job_plex_accounts_minutes': first('job_plex_accounts_minutes', '60'),
@@ -1509,6 +1502,7 @@ async def _settings_from_form(request: Request) -> dict:
     }
     existing=all_settings()
     values.update({key:first(key,existing.get(key,default)) for key,default in compact_policy.PREFERENCE_DEFAULTS.items()})
+    values.update({key:first(key,existing.get(key,default)) for key,default in SCHEDULE_DEFAULTS.items()})
     if 'local_auth_username' in form:
         values['local_auth_username'] = first('local_auth_username', 'admin') or 'admin'
     password = first('local_auth_password')
@@ -2228,10 +2222,10 @@ async def seerr_decline_request_api(request_id: str, db: Session = Depends(get_d
 @app.get('/api/libraries')
 async def libraries_api(
     q: str = '', kind: str = 'all', source: str = 'all', preset: str = '', months: int = 24, before: str = '',
-    history: str = '', viewer: str = '', sort: str = '', direction: str = 'asc', page: int = 1, page_size: int = 50,
+    history: str = '', viewer: str = '', sort: str = '', direction: str = 'asc', page: int = 1, page_size: int = 50, provider: str = 'all',
     db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)
 ):
-    payload = await browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size)
+    payload = await browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size, provider)
     payload['user'] = api_user_payload(context)
     payload['server_label'] = media_server_label()
     return payload
@@ -2256,17 +2250,29 @@ async def libraries_monitor_api(
     )
 
 
-@app.post('/api/libraries/manage/delete')
-async def libraries_delete_api(
-    payload: dict = Body(...), context: AuthContext = Depends(require_auth)
-):
+@app.get('/api/libraries/manage/delete-review')
+async def libraries_delete_review_api(kind: str, source_index: int, item_id: int, db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
     require_api_write(context, 'libraries.delete')
-    return await library_service.delete_library_item(
-        str(payload.get('kind') or ''),
-        int(payload.get('source_index') or 0),
-        int(payload.get('item_id') or 0),
-        bool(payload.get('delete_files', True)),
-    )
+    if not context.is_admin: raise HTTPException(403, 'Admin required')
+    try:
+        review = await library_actions.inspect(db, kind, source_index, item_id)
+        await streaming_availability.refresh(db, [review['item']], limit=1)
+        return dict(library_actions.public(review), confirmation=library_actions.token(review))
+    except (ValueError, StopIteration): raise HTTPException(422, 'Could not inspect this library item.')
+
+
+@app.post('/api/libraries/manage/delete')
+async def libraries_delete_api(payload: dict = Body(...), db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
+    require_api_write(context, 'libraries.delete')
+    if not context.is_admin: raise HTTPException(403, 'Admin required')
+    if payload.get('confirm') != 'delete' or not payload.get('confirmation'): raise HTTPException(422, 'Review and confirm the deletion first.')
+    try:
+        result = await library_actions.execute(db, payload['confirmation'], str(payload.get('mode') or ''), context.username)
+    except Exception as exc:
+        if isinstance(exc, ValueError): raise HTTPException(409, str(exc))
+        raise HTTPException(409, 'Deletion could not be confirmed. Check the source before retrying.')
+    scheduler.add_job(scheduled_library_inventory, 'date', run_date=datetime.utcnow(), id='inventory-after-delete', replace_existing=True)
+    return result
 
 
 @app.get('/api/graphs')
@@ -2556,21 +2562,14 @@ async def unmonitor_download_media(request: Request, title: str = Form(...), req
 @app.post('/downloads/media/delete-files')
 async def delete_download_media_files(request: Request, title: str = Form(...), request_type: str = Form(...), db: Session = Depends(get_db)):
     user = current_user(request, db)
-    if not user or not user.is_admin:
-        return RedirectResponse('/', status_code=302)
-    client, media, target = await find_arr_media(title, request_type)
-    if not client:
-        return request_redirect(f'{target} is not configured.', 'bad')
-    if not media or not media.get('id'):
-        return request_redirect(f'{target} did not find {title}.', 'bad')
-    try:
-        if request_type == 'movie':
-            await client.delete_movie(int(media['id']), delete_files=True)
-        else:
-            await client.delete_series(int(media['id']), delete_files=True)
-    except Exception:
-        return request_redirect(f'Could not delete files for {title} through {target}.', 'bad')
-    return request_redirect(f'Delete files command sent to {target} for {title}.')
+    if not user or not user.is_admin: raise HTTPException(403, 'Admin required')
+    kind = 'movie' if request_type == 'movie' else 'series'
+    inventory, errors = await library_service.library_inventory(db, include_usage=False)
+    matches = [i for i in inventory if i['kind'] == kind and library_service.normalized_title(i['title']) == library_service.normalized_title(title)]
+    if len(matches) == 1 and not errors:
+        item = matches[0]
+        return RedirectResponse('/libraries/manage/delete-review?' + urlencode(dict(kind=kind,source_index=item['source_index'],item_id=item['id'])),status_code=303)
+    return RedirectResponse('/libraries?' + urlencode(dict(q=title,kind=kind,notice='Choose the source library before deleting.')),status_code=303)
 
 
 @app.get('/graphs', response_class=HTMLResponse)
@@ -2921,49 +2920,60 @@ def save_user_policy(
     return RedirectResponse(f'/users/{username}?tab=permissions', status_code=303)
 
 
-async def browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size):
+async def browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size, provider='all'):
     if before:
         try:
             datetime.strptime(before, '%Y-%m-%d')
         except ValueError:
             raise HTTPException(422, 'Cutoff must be a date: YYYY-MM-DD')
     return await library_service.browse_libraries_payload(db, q, kind, source, preset=preset, months=months, before=before,
-        history=history, viewer=viewer, sort=sort, direction=direction, page=page, page_size=page_size)
+        history=history, viewer=viewer, sort=sort, direction=direction, page=page, page_size=page_size, provider=provider)
 
 
 @app.get('/libraries', response_class=HTMLResponse)
 async def libraries(request: Request, db: Session = Depends(get_db), q: str = '', kind: str = 'all', source: str = 'all',
     preset: str = '', months: int = 24, before: str = '', history: str = '', viewer: str = '', sort: str = '',
-    direction: str = 'asc', page: int = 1, page_size: int = 50):
+    direction: str = 'asc', page: int = 1, page_size: int = 50, provider: str = 'all'):
     user = current_user(request, db)
     if not user:
         return RedirectResponse('/', status_code=302)
-    payload = await browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size)
+    payload = await browse_library_request(db, q, kind, source, preset, months, before, history, viewer, sort, direction, page, page_size, provider)
     payload.update(user={'is_admin': user.is_admin}, server_label=media_server_label())
     return templates.TemplateResponse('libraries.html', {'request': request, 'user': user, 'payload': payload})
 
 
-@app.post('/libraries/manage/delete')
-async def delete_library_item(
-    request: Request, db: Session = Depends(get_db), kind: str = Form(...), source_index: int = Form(...), item_id: int = Form(...),
-    delete_files: bool = Form(True), return_to: str = Form('/libraries')
-):
+@app.get('/libraries/manage/delete-review', response_class=HTMLResponse)
+async def library_delete_review(request: Request, kind: str, source_index: int, item_id: int, db: Session = Depends(get_db)):
     user = current_user(request, db)
-    if not user or not user.is_admin:
-        return RedirectResponse('/', status_code=302)
+    if not user or not user.is_admin: raise HTTPException(403, 'Admin required')
     try:
-        if kind == 'movie':
-            clients = _arr_clients('radarr')
-            inst = next(c for c in clients if c['index'] == source_index)
-            await inst['client'].delete_movie(item_id, delete_files=delete_files)
-        elif kind == 'series':
-            clients = _arr_clients('sonarr')
-            inst = next(c for c in clients if c['index'] == source_index)
-            await inst['client'].delete_series(item_id, delete_files=delete_files)
+        review = await library_actions.inspect(db, kind, source_index, item_id)
+        await streaming_availability.refresh(db, [review['item']], limit=1)
     except Exception:
-        logger.exception('Failed to delete library item through Arr')
-    target = return_to if return_to.startswith('/libraries') and not return_to.startswith('//') else '/libraries'
-    return RedirectResponse(target, status_code=303)
+        raise HTTPException(409, 'Could not check the current files. Refresh and try again.')
+    return templates.TemplateResponse('library_delete.html', dict(request=request, user=user, review=library_actions.public(review), confirmation=library_actions.token(review)))
+
+
+@app.post('/libraries/manage/delete')
+async def delete_library_item(request: Request, db: Session = Depends(get_db), confirmation: str = Form(...), mode: str = Form(...), confirm: str = Form(...)):
+    user = current_user(request, db)
+    if not user or not user.is_admin: raise HTTPException(403, 'Admin required')
+    if confirm != 'delete': raise HTTPException(422, 'Confirm the deletion first.')
+    try:
+        result = await library_actions.execute(db, confirmation, mode, user.username)
+    except ValueError as exc: raise HTTPException(409, str(exc))
+    except Exception: raise HTTPException(409, 'Deletion could not be confirmed. Check the source before retrying.')
+    scheduler.add_job(scheduled_library_inventory, 'date', run_date=datetime.utcnow(), id='inventory-after-delete', replace_existing=True)
+    return RedirectResponse('/libraries?' + urlencode({'notice': result['title'] + ': files deleted' if mode == 'files_future' else result['title'] + ': removed'}), status_code=303)
+
+
+@app.post('/libraries/streaming/refresh')
+async def library_streaming_refresh(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user or not user.is_admin: raise HTTPException(403, 'Admin required')
+    try: job_engine.enqueue(db, 'streaming-availability', actor=user.username, options=dict(full=True))
+    except ValueError as exc: raise HTTPException(409, str(exc))
+    return RedirectResponse('/libraries', status_code=303)
 
 
 @app.post('/libraries/manage/monitor')
@@ -3017,8 +3027,7 @@ def library_audit_payload(db, source='all', page=1, target_mbps=None):
 @app.get('/api/libraries/audit')
 def library_audit_api(source: str = 'all', page: int = 1, target_mbps: float | None = None,
     db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
-    if not context.is_admin:
-        raise HTTPException(403, 'Admin required')
+    require_api_write(context, 'libraries.read')
     try:
         return library_audit_payload(db, source, page, target_mbps)
     except ValueError as exc:
@@ -3027,7 +3036,7 @@ def library_audit_api(source: str = 'all', page: int = 1, target_mbps: float | N
 
 async def space_review_payload(db, q='', source='all', kind='all', managed='all', min_gb=None, sort='size', direction='desc', page=1, page_size=50):
     if not library_service.plex_catalogue(db):await library_summary.summary(db,refresh=True)
-    inventory,errors=await library_service.library_inventory(db)
+    inventory,errors=await library_service.library_inventory(db,include_usage=False)
     try:
         threshold=float(all_settings().get('space_review_min_gb','25')) if min_gb is None else min_gb
         result=space_review.page(db,inventory,q=q,source=source,kind=kind,managed=managed,min_gb=threshold,sort=sort,direction=direction,page=page,page_size=page_size)
@@ -3039,7 +3048,7 @@ async def space_review_payload(db, q='', source='all', kind='all', managed='all'
 @app.get('/api/libraries/space')
 async def space_review_api(q: str='', source: str='all', kind: str='all', managed: str='all', min_gb: float|None=None, sort: str='size', direction: str='desc', page: int=1, page_size: int=50,
     db: Session=Depends(get_db), context: AuthContext=Depends(require_auth)):
-    if not context.is_admin:raise HTTPException(403,'Admin required')
+    require_api_write(context, 'libraries.read')
     return await space_review_payload(db,q,source,kind,managed,min_gb,sort,direction,page,page_size)
 
 
@@ -3136,19 +3145,16 @@ async def library_audit_run(request: Request, audit: str = Form(...), view: str 
     user = current_user(request, db)
     if not user or not user.is_admin:
         raise HTTPException(403, 'Admin required')
-    job_id = {'health':'library-health-now','storage':'library-storage-now'}.get(audit)
-    if not job_id:
-        raise HTTPException(422, 'Unknown audit')
-    # A single job identity prevents concurrent manually requested scans.
-    if not scheduler.get_job(job_id):
-        scheduler.add_job(scheduled_library_health if audit == 'health' else scheduled_library_storage,
-            'date', run_date=datetime.utcnow(), id=job_id, max_instances=1)
+    job_id = {'health':'library-health','storage':'library-storage'}.get(audit)
+    if not job_id: raise HTTPException(422, 'Unknown audit')
+    try: job_engine.enqueue(db, job_id, actor=user.username)
+    except ValueError as exc: raise HTTPException(409, str(exc))
     return RedirectResponse('/libraries/audit/report?' + urlencode({'view':view if view in ('health','duplicates','storage') else 'health', 'running':audit}), status_code=303)
 
 
 @app.get('/api/libraries/replacements')
 async def replacements_api(q: str='', source: str='all', min_gb: float=Query(0,ge=0,le=100000), managed: str='all', db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
-    if not context.is_admin:raise HTTPException(403,'Admin required')
+    require_api_write(context, 'libraries.read')
     return await replacements.current_payload(db,q=q,source=source,min_gb=min_gb,managed=managed)
 
 
@@ -3173,8 +3179,9 @@ async def replacements_page(request: Request, q: str='', source: str='all', min_
 async def replacements_scan(request: Request, q: str='', source: str='all', min_gb: float=Query(0,ge=0,le=100000), managed: str='all', db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user or not user.is_admin:raise HTTPException(403,'Admin required')
-    if not replacements.scan_lock.locked() and not replacements.action_lock.locked():
-        scheduler.add_job(scheduled_replacements,'date',run_date=datetime.utcnow(),id='compact-replacements-manual',replace_existing=True,kwargs=dict(q=q,source=source,min_gb=min_gb,managed=managed))
+    try:
+        job_engine.enqueue(db, 'compact-replacements', actor=user.username, options=dict(q=q,source=source,min_gb=min_gb,managed=managed))
+    except ValueError as exc: raise HTTPException(409, str(exc))
     return RedirectResponse('/libraries/replacements?'+urlencode(dict(q=q,source=source,min_gb=min_gb,managed=managed)),status_code=303)
 
 
@@ -3193,22 +3200,10 @@ async def replacements_approve(request: Request, confirmation: str = Form(...), 
     user=current_user(request,db)
     if not user or not user.is_admin:raise HTTPException(403,'Admin required')
     if confirm!='replace':raise HTTPException(422,'Confirm the selected replacements.')
-    reserved=[]
     try:
-        if replacements.scan_lock.locked() or replacements.action_lock.locked() or (library_audit.state(db,replacements.KEY+'-approval') or {}).get('active'):raise ValueError('A check or approval is already running.')
-        data=replacements.serializer().loads(confirmation,max_age=600)
-        rows=replacements.selections(db,[r['key'] for r in data['rows']])
-        expected=[dict(key=r['key'],fingerprint=r['fingerprint'],candidate=r['candidate']['key']) for r in rows]
-        if data['rows']!=expected:raise ValueError('Results changed. Review again.')
-        reserved=replacement_tracking.reserve(db,rows,user.username)
-        library_audit.save(db,replacements.KEY+'-approval',dict(status='queued',active=True,total=len(rows),done=0,submitted=0,plan=data,actor=user.username,approved_at=replacements.stamp(),job_id=replacements.operation_key('compact-grab-',confirmation)))
-        scheduler.add_job(scheduled_replacement_approval,'date',run_date=datetime.utcnow(),id='compact-replacement-approval',replace_existing=False,args=[confirmation,user.username])
+        queue_replacement_approval(db, confirmation, user.username)
     except Exception as exc:
-        db.rollback()
         message=str(exc) if isinstance(exc,ValueError) else 'Approval expired or could not be checked. Review again.'
-        if reserved:
-            for task in reserved:replacement_tracking.save(db,task,status='Not submitted',message=message)
-            replacements.progress(db,status='stopped',active=False,message=message)
         return RedirectResponse('/libraries/replacements?'+urlencode({'error':message}),status_code=303)
     return RedirectResponse('/libraries/replacements/jobs',status_code=303)
 

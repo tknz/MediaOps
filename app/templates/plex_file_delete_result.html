@@ -1,0 +1,5 @@
+{% extends 'base.html' %}{% block content %}<section class="panel"><h1>{{ result.title }}</h1>
+{% if result.file=='removed' %}<p><strong>File deleted · {{ result.bytes|bytes }}</strong></p>{% else %}<p role="alert"><strong>File deletion not confirmed.</strong> {{ result.error or 'Plex still reports the file or could not verify it.' }}</p>{% endif %}
+{% if result.folder=='removed' %}<p>Movie folder removed.</p>{% elif result.folder=='retained_empty' %}<p role="alert">The movie folder is empty, but Plex did not remove it.</p>{% elif result.folder=='retained_with_contents' %}<p role="alert">Movie folder remains · {{ result.remaining_entries }} entries retained.</p>{% elif result.folder=='unverified' %}<p role="alert">Movie folder could not be verified through Plex.</p>{% endif %}
+{% if result.folder!='not_applicable' %}<p class="file-path">{{ result.folder_path }}</p>{% endif %}
+{% if result.status!='completed' %}<p class="muted">Needs review. This operation will not be submitted again automatically.</p><form method="get"><button>Check again</button></form>{% endif %}<a href="/libraries/space">Back to Large files →</a></section>{% endblock %}

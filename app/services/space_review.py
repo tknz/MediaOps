@@ -1,8 +1,12 @@
 """Plex file-size review, independent of Arr ownership and deployment paths."""
 from datetime import datetime
+import hashlib
 from urllib.parse import urlencode
 from . import library_audit as audit, replacement_tracking as tracking
-from .libraries import plex_catalogue, normalized_title, format_bytes
+from .libraries import plex_catalogue, normalized_title, format_bytes, enrich_inventory_usage
+
+
+def file_key(path): return hashlib.sha256(str(path).encode()).hexdigest()[:24]
 
 def plex_owner(node, kind):
     ids = {g.get('id', '').split('://', 1)[0]:g.get('id', '').split('://', 1)[-1] for g in node.findall('Guid')}
@@ -18,34 +22,67 @@ def plex_file(node, media, part, library, owner):
     size=int(part.get('size') or 0)
     return dict(path=part.get('file'), bytes=size, title=owner['title'], year=owner.get('year'),
         kind=owner['kind'], owner_guid=owner['guid'], tmdb_id=owner.get('tmdb_id'), tvdb_id=owner.get('tvdb_id'),
-        rating_key=node.get('ratingKey'), sources=[library['title']], codec=media.get('videoCodec') or media.get('audioCodec') or 'Unknown',
+        rating_key=node.get('ratingKey'), media_id=media.get('id'), part_id=part.get('id'),
+        part_count=len(media.findall('Part')), sources=[library['title']], codec=media.get('videoCodec') or media.get('audioCodec') or 'Unknown',
         resolution=media.get('videoResolution') or 'Unknown', audio_codec=media.get('audioCodec') or 'Unknown',
         audio_channels=media.get('audioChannels'), duration_seconds=duration or None,
         bitrate_mbps=round(size*8/duration/1e6,2) if duration else None,
         edition=node.get('editionTitle') or '', episode=node.get('title') if owner['kind']=='show' else None,
         last_viewed_at=int(node.get('lastViewedAt') or 0))
 
-def page(db, inventory, *, q='', source='all', kind='all', managed='all', min_gb=25, sort='size', direction='desc', page=1, page_size=50):
-    if not 0 <= min_gb <= 100000:raise ValueError('Minimum size must be between 0 and 100000 GB.')
+def file_rows(db, inventory, source='all'):
     catalogue=plex_catalogue(db);files=catalogue.get('files',[]);owners={};jobs=tracking.tasks(db)
-    for item in inventory:
+    watch=[dict(item) for item in inventory]
+    for item in watch:
         identity=item.get('tvdb_id') if item['kind']=='series' else item.get('tmdb_id')
         if identity:owners.setdefault(('show' if item['kind']=='series' else 'movie',identity),[]).append(item)
+    # Include unmanaged Plex identities in the same full-history pass. Keep remakes
+    # in the matching context, even when the caller filters to one title or page.
+    synthetic={};file_watch={}
+    for f in files:
+        if f['kind'] not in ('movie','show'): continue
+        external=f.get('tvdb_id') if f['kind']=='show' else f.get('tmdb_id')
+        matches=owners.get((f['kind'],external),[]) if external else []
+        if not matches:
+            key=(f['kind'],external or f.get('owner_guid') or (f['title'],f.get('year')))
+            if key not in synthetic:
+                item=dict(kind='series' if f['kind']=='show' else 'movie',id=-len(synthetic)-1,title=f['title'],year=f.get('year'),
+                          source='Plex',source_index=-1,tmdb_id=f.get('tmdb_id'),tvdb_id=f.get('tvdb_id'),aliases=[])
+                synthetic[key]=item;watch.append(item)
+            matches=[synthetic[key]]
+        file_watch[f['path']]=matches
+    enrich_inventory_usage(db,watch)
     rows=[]
     for f in files:
         identity=f.get('tvdb_id') if f['kind']=='show' else f.get('tmdb_id')
         matches=owners.get((f['kind'],identity),[]) if identity else []
-        row=dict(f,managed=bool(matches),owners=[dict(source=m['source'],id=m['id'],monitored=m['monitored']) for m in matches])
+        row=dict(f,key=file_key(f['path']),managed=bool(matches),owners=[dict(source=m['source'],id=m['id'],monitored=m['monitored']) for m in matches])
+        usage=file_watch.get(f['path'],[])
+        latest=max((m for m in usage if m.get('last_watched_at')),key=lambda m:m['last_watched_at'],default={})
+        row.update(plays=max((m.get('plays',0) for m in usage),default=0),watch_hours=max((m.get('watch_hours',0) for m in usage),default=0),
+                   last_watched_at=latest.get('last_watched_at'),last_watched_by=latest.get('last_watched_by'),
+                   active_viewers=sorted({v for m in usage for v in m.get('active_viewers',[])}),
+                   playback_scope='series' if f['kind']=='show' else 'title',
+                   history_status='ambiguous' if any(m.get('history_status')=='ambiguous' for m in usage) else 'recorded' if latest else 'unknown')
+        plex_last=datetime.utcfromtimestamp(f['last_viewed_at']) if f.get('last_viewed_at') else None
+        if plex_last and (not row['last_watched_at'] or plex_last>row['last_watched_at']):
+            row.update(last_watched_at=plex_last,last_watched_by='Plex (viewer unavailable)')
+            if row['history_status']!='ambiguous':row['history_status']='recorded'
+        row['delete_url']='/libraries/space/files/'+row['key']+'/delete' if str(f.get('rating_key','')).isdigit() and f['kind'] in ('movie','show','video','artist') else None
         if matches:
             job=next((t for t in jobs if any(t['source']==m['source'] and t['movie_id']==m['id'] for m in matches)),None) if f['kind']=='movie' else None
             if job:row['operation']=job
-            row['last_watched_at']=max((m.get('last_watched_at') for m in matches if m.get('last_watched_at')),default=None)
-            row['history_status']='ambiguous' if any(m.get('history_status')=='ambiguous' for m in matches) else 'recorded' if row['last_watched_at'] else 'unknown'
             row['replacement_url']='/libraries/replacements?'+urlencode(dict(q=f['title'],source=source,min_gb=0))
             row['manage_url']='/libraries?'+urlencode(dict(q=matches[0]['title'],source=matches[0]['source']))
-        else:
-            row['last_watched_at']=datetime.utcfromtimestamp(f['last_viewed_at']) if f.get('last_viewed_at') else None
-            row['history_status']='Plex playback' if row['last_watched_at'] else 'unknown'
+        rows.append(row)
+    return rows
+
+
+def page(db, inventory, *, q='', source='all', kind='all', managed='all', min_gb=25, sort='size', direction='desc', page=1, page_size=50):
+    if not 0 <= min_gb <= 100000:raise ValueError('Minimum size must be between 0 and 100000 GB.')
+    catalogue=plex_catalogue(db);files=catalogue.get('files',[]);rows=[]
+    for row in file_rows(db,inventory,source):
+        f=row;matches=row['owners']
         if q and normalized_title(q) not in normalized_title(f['title']+' '+f['path']):continue
         if source!='all' and source not in f['sources'] and source not in [m['source'] for m in matches]:continue
         if kind!='all' and f['kind']!=kind:continue

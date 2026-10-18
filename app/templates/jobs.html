@@ -1,0 +1,9 @@
+{% extends 'base.html' %}{% block content %}
+<link rel="stylesheet" href="/static/jobs.css">
+<div data-jobs-app data-timezone="{{ server_timezone or 'UTC' }}">
+<section class="section-head"><div><h1>Jobs</h1><p class="muted">Schedules, status and recent runs · {{ server_timezone or 'server time' }}</p></div><a href="/libraries/replacements/jobs">Replacement downloads →</a></section>
+{% if request.query_params.get('error') %}<p role="alert">{{ request.query_params.get('error') }}</p>{% endif %}
+<section class="panel">{% set embedded = false %}{% include '_jobs_table.html' %}</section>
+<p class="muted">Run now refreshes data. Deletions and replacement downloads require their separate review and approval.</p>
+</div><script src="/static/jobs.js" defer></script>
+{% endblock %}

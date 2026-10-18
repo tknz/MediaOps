@@ -1,0 +1,137 @@
+# Jobs, JSON API and MCP
+
+All recurring work is declared in `app/services/job_registry.py`. The existing
+APScheduler remains the executor. There is no second scheduler, external cron,
+or separate worker service. `job_engine.py` wraps the registered callbacks and
+stores run state in the existing `LibraryAuditState` table.
+
+`/jobs` and Settings → Jobs read that same registry. Duplicates, codec efficiency
+and oversized-file checks share the **Duplicates & storage efficiency** job.
+Health, inventory, streaming availability, replacement searches, replacement
+tracking and the original four refresh jobs are also visible. Approval submissions
+and Tautulli bootstrap imports appear as on-demand workflows; they cannot be
+started using a generic Run now call.
+
+Each job exposes its interval, enabled/paused state, next run, report link, current
+state and the most recent 30 runs. Runs retain UTC start/end times, elapsed time,
+manual/scheduled origin and a sanitized failure category. Arguments and service
+credentials are never recorded. Old cached reports remain accessible; historical
+run times are not invented. A process restart marks unfinished recorded runs
+interrupted. A failed destructive operation is never automatically retried by
+the job engine. Existing replacement approval/recovery remains in its own durable
+operation ledger, linked from Jobs.
+
+Schedules are persisted. Pausing a schedule does not cancel an already running
+operation, stop Radarr/Sonarr downloads, or revoke a replacement approval. Manual
+refresh remains available for a paused schedule. Manual duplicate requests and
+simultaneous execution of the same callback are rejected/suppressed. There is
+one app scheduler process; this is not a distributed multi-worker queue.
+
+## API and MCP operations
+
+The API uses the existing bearer/session authentication. MCP uses `POST /api/mcp`
+with JSON-RPC `initialize`, `tools/list` and `tools/call`. `tools/list` advertises
+only operations the caller can use, with argument schemas and read/destructive
+annotations. The original status, overview, pending_requests and history_search
+tools remain available to their original read scopes. Overview includes cached
+library totals when the caller has `libraries.read`.
+
+Every name below is prefixed with `mediaops.` in MCP. JSON bodies use the same
+validated arguments as their corresponding tool. Existing GET APIs use query
+parameters. New POST schemas are exposed through `/openapi.json` and `/docs`.
+
+| MCP name | JSON API | Scope |
+|---|---|---|
+| jobs_list | GET `/api/jobs` | jobs.read |
+| job_detail | GET `/api/jobs/{job_id}` or POST `/api/jobs/detail` | jobs.read |
+| job_run | POST `/api/jobs/run` | jobs.write |
+| job_schedule | POST `/api/jobs/schedule` | jobs.write |
+| library_browse | GET `/api/libraries` | libraries.read |
+| library_inventory | GET `/api/libraries/inventory` | libraries.read |
+| library_audit | GET `/api/libraries/audit` | libraries.read |
+| large_files | GET `/api/libraries/space` | libraries.read |
+| duplicates_review | POST `/api/libraries/duplicates/review` | admin + libraries.delete |
+| duplicates_delete | POST `/api/libraries/duplicates/delete` | admin + libraries.delete |
+| library_monitor | POST `/api/libraries/monitor` | libraries.write |
+| library_delete_review | GET `/api/libraries/manage/delete-review` | admin + libraries.delete |
+| library_delete | POST `/api/libraries/manage/delete` | admin + libraries.delete |
+| replacements_list | GET `/api/libraries/replacements` | libraries.read |
+| replacements_scan | POST `/api/libraries/replacements/scan` | jobs.write |
+| replacements_review | POST `/api/libraries/replacements/review` | admin + replacements.write |
+| replacements_approve | POST `/api/libraries/replacements/approve` | admin + replacements.write |
+| replacement_jobs | POST `/api/libraries/replacements/jobs` | libraries.read |
+| downloads_list | GET `/api/downloads/live` | downloads.read |
+| download_control | POST `/api/downloads/control` | downloads.write |
+| streaming_refresh | POST `/api/libraries/streaming/refresh` | jobs.write |
+| replacement_preferences | GET `/api/libraries/replacements/preferences` | libraries.read |
+| library_preferences_update | POST `/api/libraries/preferences` | admin + libraries.write |
+| plex_file_review | POST `/api/libraries/files/review` | admin + libraries.delete |
+| plex_file_delete | POST `/api/libraries/files/delete` | admin + libraries.delete |
+| plex_file_delete_status | POST `/api/libraries/files/status` | admin + libraries.delete |
+
+Admin UI pages and destructive APIs keep their admin restrictions. The audit,
+large-file and replacement read APIs also accept `libraries.read`, matching MCP.
+An admin context satisfies scopes; a limited token needs the listed scope. The new scoped read operations
+do not grant Home Assistant status/moderation access. Suggested read-only MCP
+scopes: `mcp.read jobs.read libraries.read downloads.read`. No existing token is
+silently upgraded and no token is generated by these changes.
+
+Examples:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mediaops.job_run","arguments":{"job_id":"library-storage"}}}
+```
+
+```json
+{"job_id":"library-health","interval":30,"enabled":true}
+```
+
+The second body goes to `/api/jobs/schedule`; interval units come from the job
+registry. `job_run.options` supports replacement filters for `compact-replacements`
+and `full` for `streaming-availability`; other jobs accept no options.
+
+## Explicit media actions
+
+Duplicate selection uses `selections: [{group_key, copy_key}]`. Review returns a
+short-lived signed confirmation token. Deletion requires that token and
+`confirm: "delete"`. It retains the existing playback, keep-one-copy, file-change
+and replay checks. A successful review does not itself authorize execution.
+
+Series deletion follows the same signed review flow and requires `mode: "remove"`
+or `mode: "files_future"`, plus `confirm: "delete"`. Replacement review takes
+`selections: ["source-index:movie-id"]`; approval requires its returned token and
+`confirm: "replace"`. UI, API and MCP share the same approval reservations,
+source checks and download/import tracking. Generic job execution cannot submit
+approved releases, force imports, delete media or alter native Arr profiles. The
+existing Plex polling job still enforces the configured playback policies.
+
+Preference updates change MediaOps policy only. The API does not automatically
+rewrite native Sonarr/Radarr profiles. Streaming-provider filters have the same
+country, freshness, unknown-data and pagination behavior as Libraries.
+
+## Plex files outside Arr
+
+Large files includes exact-file deletion even when no Arr title matches.
+`plex_file_review` takes the `file_key` returned as `key` by `large_files`.
+`plex_file_delete` requires the returned signed token and `confirm: "delete"`.
+It calls Plex's exact media-version API, never a shell or media filesystem mount.
+The owner token must already allow media deletion. Active playback, multipart
+versions, inaccessible files and changed file identities/sizes block the action.
+The last copy may be deleted after explicit confirmation; this is distinct from
+the duplicate-cleanup action, which always keeps a copy.
+
+The result checks the file and (for movies) its folder through Plex's own browse
+API. A remaining empty folder, sidecars or unavailable directory check prevents
+a fully-completed result. No arbitrary folder-removal API or mount is added.
+`plex_file_delete_status` takes the returned `operation_id` and can recheck an
+uncertain result using GETs only. Neither a lost response nor a new review token
+automatically resubmits the same file deletion. Playback history is retained.
+Arr monitoring stays unchanged and may download missing managed content again;
+the review links to Arr title management when applicable.
+
+Large-file results include recorded playback sessions, hours, last-play date
+and viewer for managed and unmanaged movies/shows. TV rows explicitly say series
+total. History uses the existing complete-history matcher, with stable Plex keys
+and conservative remake handling; no newest-60,000 cutoff or completed-episode
+inference is introduced. Deleted files are removed from the cached Plex file
+list only after Plex's browse API confirms they are gone.

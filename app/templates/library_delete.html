@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% from '_streaming.html' import streaming %}
+{% block content %}
+{% set i = review.item %}
+<section class="panel library-delete-review">
+<p class="eyebrow">{{ i.source }}</p><h1>Delete {{ i.title }}?</h1>
+<dl><dt>On disk</dt><dd>{{ review.bytes|bytes }} · {{ review.file_count }} files</dd>
+<dt>Subscription streaming</dt><dd>{{ streaming(i.streaming) }}</dd>
+{% if i.network %}<dt>Original network</dt><dd>{{ i.network }}</dd>{% endif %}
+<dt>Monitoring</dt><dd>{{ 'Monitored' if i.monitored else 'Not monitored' }}</dd>
+<dt>Folder</dt><dd class="file-path">{{ i.path }}</dd></dl>
+{% if i.streaming.link %}<p><a href="{{ i.streaming.link }}" target="_blank" rel="noopener noreferrer">Check streaming availability</a></p>{% endif %}
+<p class="muted">Availability: TMDB / JustWatch via Seerr. {% if i.kind=='series' %}Seasons may differ. {% endif %}Confirm availability before relying on it.</p>
+<form method="post" action="/libraries/manage/delete" data-library-delete>
+<input type="hidden" name="confirmation" value="{{ confirmation }}">
+{% if i.kind=='series' %}
+<label class="library-delete-choice"><input type="radio" name="mode" value="files_future" checked required><span><b>Delete files, monitor future episodes</b><small>Keep the show in Sonarr. Unmonitor aired/stored episodes; monitor upcoming episodes and new seasons. No search is started.</small></span></label>
+<label class="library-delete-choice"><input type="radio" name="mode" value="remove" required><span><b>Remove series completely</b><small>Delete its files and remove the show from Sonarr.</small></span></label>
+{% else %}<input type="hidden" name="mode" value="remove"><p>Delete the files and remove this movie from Radarr.</p>{% endif %}
+<p class="muted">Files use the source's recycle bin setting, if configured. MediaOps playback history is retained.</p>
+<label class="delete-confirm"><input type="checkbox" name="confirm" value="delete" required> I confirm deletion of these files.</label>
+<p><button class="danger">Confirm deletion</button> <a href="/libraries">Cancel</a></p><p role="status" data-delete-status></p>
+</form></section>
+<script src="/static/library-delete.js" defer></script>
+{% endblock %}

@@ -16,6 +16,11 @@
   }[char]));
 
   const typeLabel = (item) => (item && item.kind === 'series' ? 'TV' : 'Movie');
+  function streamingLabel(item) {
+    const row = item.streaming || {};
+    const names = (row.providers || []).map(p => p.name).join(', ');
+    return `${esc(names || (row.status === 'known' ? 'No subscription listing' : 'Not checked'))}<small>${esc(row.region || state.streaming_region)}${row.checked_at ? ' · checked ' + esc(row.checked_at.slice(0, 10)) : ''}${row.status === 'stale' ? ' · out of date' : ''}${row.error ? ' · refresh unavailable' : ''}</small>`;
+  }
   const itemHref = (item) => `/libraries${api.query({ q: item.title, kind: item.kind, source: item.source })}`;
 
   function actionPayload(item) {
@@ -62,7 +67,7 @@
     return `
       <div class="row-actions">
         <button class="mini ${item.monitored ? 'mini-warn' : ''}" type="button" data-action="monitor" data-key="${esc(key)}"${disabled}>${monitorLabel}</button>
-        <button class="mini danger-mini" type="button" data-action="delete" data-key="${esc(key)}"${disabled}>${esc(label || 'Delete')}</button>
+        <button class="mini danger-mini" type="button" data-action="delete" data-key="${esc(key)}"${disabled}>Delete…</button>
       </div>
     `;
   }
@@ -138,6 +143,7 @@
             ${sources.map((source) => `<option value="${esc(source)}"${filters.source === source ? ' selected' : ''}>${esc(source)}</option>`).join('')}
           </select></label>
           <input type="hidden" name="preset" value="${esc(filters.preset || '')}">
+          <label>Streaming (${esc(state.streaming_region)})<select name="provider">${[['all','Any platform'],['unknown','Unknown / out of date'],['none','No subscription listing'],...(state.streaming_providers || []).map(p => [String(p.id),p.name])].map(([v,t]) => `<option value="${esc(v)}"${filters.provider === v ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
           <label>Inactivity<select name="months">${[6,12,24].map(v => `<option value="${v}"${Number(filters.months) === v ? ' selected' : ''}>${v} months</option>`).join('')}</select></label>
           <label>Or before (UTC)<input type="date" name="before" value="${esc(filters.before || '')}"></label>
           <label>History<select name="history">${[['all','All'],['recorded','Recorded before cutoff'],['unknown','No recorded history'],['include','Before cutoff plus no history'],['ambiguous','Ambiguous identity']].map(([v,t]) => `<option value="${v}"${filters.history === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
@@ -148,6 +154,8 @@
           <button class="mini" type="submit">Search</button>
           ${(filters.q || filters.kind !== 'all' || filters.source !== 'all') ? '<button class="mini" type="button" data-action="clear-filters">Clear</button>' : ''}
         </form>
+        <p class="muted">Subscription listings: ${esc(state.streaming_coverage?.known || 0)}/${esc(state.streaming_coverage?.total || 0)} checked · ${esc(state.streaming_region)} · TMDB / JustWatch via Seerr. Seasons may differ.</p>
+        ${state.user?.is_admin ? '<form method="post" action="/libraries/streaming/refresh"><button class="mini">Refresh streaming availability</button></form>' : ''}
         <p>${esc(state.coverage)} ${filters.viewer ? `Scope: ONLY ${esc(filters.viewer)}; other viewers may have watched recently.` : 'Scope: ALL viewers.'}</p>
         ${compact ? '' : mediaTable()}
       </section>
@@ -158,9 +166,10 @@
     const items = state.items || [];
     const rows = items.map((item) => `
       <tr>
-        <td><div class="media-title">${item.poster ? `<img src="${esc(item.poster)}" alt="">` : ''}<span><strong>${esc(item.title)}</strong>${item.year ? `<small>${esc(item.year)}</small>` : ''}</span></div></td>
+        <td><div class="media-title">${item.poster ? `<img src="${esc(item.poster)}" alt="">` : ''}<span><a href="${esc(itemHref(item))}"><strong>${esc(item.title)}</strong></a>${item.year ? `<small>${esc(item.year)}</small>` : ''}</span></div></td>
         <td>${typeLabel(item)}</td>
         <td>${esc(item.source)}</td>
+        <td>${streamingLabel(item)}</td>
         <td>${esc(item.size_label)}</td>
         <td>${esc(item.last_watched_at || item.history_status)}<small>${esc(item.last_watched_by || "—")} · ${esc(item.plays)} playback sessions · ${esc(item.watch_hours)}h</small>${(item.active_viewers || []).length ? `<b>Playing now: ${esc(item.active_viewers.join(", "))}</b>` : ""}</td>
         <td>${item.monitored ? 'Monitored' : '<span class="muted-cell">Not monitored</span>'}${item.quality ? `<small>${esc(item.quality)}</small>` : ''}</td>
@@ -172,8 +181,8 @@
       <p>${esc(state.total_count)} results · ${esc(state.total_bytes_label)} · cutoff ${esc(state.cutoff)} UTC · Page ${esc(state.page)}/${esc(state.pages)}</p>
       ${state.previous_url ? `<a href="${esc(state.previous_url)}">Previous</a>` : ''} ${state.next_url ? `<a href="${esc(state.next_url)}">Next</a>` : ''}
       <table class="media-table">
-        <thead><tr><th>Title</th><th>Type</th><th>Source</th><th>Size</th><th>Watched</th><th>Status</th><th>Path</th><th></th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="8">No media found.</td></tr>'}</tbody>
+        <thead><tr><th>Title</th><th>Type</th><th>Source</th><th>Streaming</th><th>Size</th><th>Watched</th><th>Status</th><th>Path</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="9">No media found.</td></tr>'}</tbody>
       </table>
     `;
   }
@@ -230,6 +239,8 @@
             <dt>Type</dt><dd>${item.kind === 'series' ? 'TV show' : 'Movie'}</dd>
             <dt>Size</dt><dd>${esc(item.size_label)}</dd>
             <dt>Source</dt><dd>${esc(item.source)}</dd>
+            <dt>Streaming</dt><dd>${streamingLabel(item)}${item.streaming?.link ? `<small><a href="${esc(item.streaming.link)}" target="_blank" rel="noopener noreferrer">Check availability</a></small>` : ''}</dd>
+            ${item.network ? `<dt>Original network</dt><dd>${esc(item.network)}</dd>` : ''}
             <dt>Status</dt><dd>${item.monitored ? 'Monitored' : 'Not monitored'}</dd>
             <dt>Files</dt><dd>${esc(item.quality || '-')}</dd>
             ${item.seasons ? `<dt>Seasons</dt><dd>${esc(item.seasons)}</dd>` : ''}
@@ -274,6 +285,9 @@
   }
 
   function renderDashboard() {
+    if (state.filters?.provider && state.filters.provider !== 'all') {
+      return `<section class="cinema-hero library-hero"><h1>Libraries</h1></section>${filterForm('Streaming availability', false)}`;
+    }
     const stats = state.stats || {};
     const libs = state.libraries || [];
     const errors = state.errors || [];
@@ -309,6 +323,8 @@
 
   function render() {
     root.innerHTML = state.selected_detail ? renderSelected(state.selected_detail) : renderDashboard();
+    const notice = new URLSearchParams(window.location.search).get('notice');
+    if (notice) showNotice(notice, 'good');
   }
 
   function nextFilters(form) {
@@ -362,9 +378,8 @@
     }
 
     if (button.dataset.action === 'delete') {
-      if (window.confirm(`Delete ${item.title} from disk?`)) {
-        await callAction('/api/libraries/manage/delete', { ...actionPayload(item), delete_files: true }, '/libraries/manage/delete');
-      }
+      window.location.href = `/libraries/manage/delete-review${api.query(actionPayload(item))}`;
+      return;
     }
 
     busyAction = null;

@@ -1,0 +1,14 @@
+{% extends 'base.html' %}{% from '_streaming.html' import streaming %}{% block content %}
+{% set i=review.item %}
+<section class="panel audit-page library-delete-review"><p class="eyebrow">Plex · exact file</p><h1>Delete {{ i.title }}?</h1>
+<dl><dt>File</dt><dd class="file-path">{{ review.target.path }}</dd><dt>Size</dt><dd>{{ review.target.bytes|bytes }} · {{ i.resolution }} · {{ i.codec }}</dd>
+<dt>Playback · all viewers{% if i.playback_scope=='series' %} · series total{% endif %}</dt><dd>{{ i.plays }} recorded sessions · {{ i.watch_hours }}h<small>{% if i.last_watched_at %}Last: {{ i.last_watched_at.isoformat()|server_time }} · {{ i.last_watched_by or 'Viewer unavailable' }}{% else %}No recorded history{% endif %}</small></dd>
+<dt>Subscription streaming</dt><dd>{{ streaming(i.streaming) }}</dd>
+{% if i.kind=='movie' %}<dt>Movie folder</dt><dd class="file-path">{{ review.folder_check.folder_path }}</dd>{% endif %}</dl>
+{% if not review.target.other_versions %}<p>This is the last version listed for this Plex item.</p>{% else %}<p>Other Plex versions: {{ review.target.other_versions }}. Delete this file only.</p>{% endif %}
+{% if i.managed %}<p>{{ i.owners|map(attribute='source')|join(', ') }} manages this title. Monitoring stays unchanged{% if i.owners|selectattr('monitored')|list %} and may download it again{% endif %}. <a href="{{ i.manage_url }}">Manage the title in Arr →</a></p>{% elif review.arr_unavailable %}<p>Arr status is unavailable. A monitored source could download it again.</p>{% else %}<p>Outside Arr · Plex will delete the selected file.</p>{% endif %}
+{% if i.kind=='movie' %}<p class="muted">The result will check the movie folder through Plex. Any remaining folder or sidecar files will be reported; they are not removed separately.</p>{% endif %}
+<form method="post" action="/libraries/space/files/delete" data-library-delete><input type="hidden" name="confirmation" value="{{ confirmation }}">
+<label class="delete-confirm"><input type="checkbox" name="confirm" value="delete" required> Delete this file from disk. MediaOps playback history is retained.</label>
+<p><button class="danger">Delete file</button> <a href="/libraries/space">Cancel</a></p><p role="status" data-delete-status></p></form></section>
+<script src="/static/library-delete.js" defer></script>{% endblock %}

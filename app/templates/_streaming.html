@@ -1,0 +1,6 @@
+{% macro streaming(row) -%}
+{% if row %}
+{% if row.providers %}{{ row.providers|map(attribute='name')|join(', ') }}{% elif row.status=='known' %}No subscription listing{% else %}Not checked{% endif %}
+<small>{{ row.region }}{% if row.checked_at %} · checked {{ row.checked_at[:10] }}{% endif %}{% if row.status=='stale' %} · out of date{% endif %}{% if row.error %} · refresh unavailable{% endif %}</small>
+{% else %}Not checked{% endif %}
+{%- endmacro %}

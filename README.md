@@ -217,7 +217,7 @@ If you are not using HACS, copy `custom_components/mediaops` into Home Assistant
 
 ## AI / MCP
 
-MediaOps exposes a small HTTP JSON-RPC endpoint at `POST /api/mcp` for AI tools that can speak MCP-style tool calls over HTTP. It uses the same bearer tokens as the JSON API.
+MediaOps exposes an HTTP JSON-RPC endpoint at `POST /api/mcp` for AI tools that can speak MCP-style tool calls over HTTP. It uses the same bearer tokens as the JSON API.
 
 Available tools:
 
@@ -225,6 +225,8 @@ Available tools:
 - `mediaops.overview`: usage summary for 1, 7, 30, 90, or 365 days
 - `mediaops.pending_requests`: recent requests waiting for approval
 - `mediaops.history_search`: recent watch history by title or username
+
+Jobs, library cleanup, duplicates, efficiency/health reports, streaming availability, replacement review/tracking and download controls also have API and MCP operations. See [Jobs, API and MCP](docs/jobs-api-mcp.md) for the operation map, scopes and confirmation flows. All scheduled scans appear in **Jobs** and Settings → Jobs.
 
 ## Tautulli History Import
 

@@ -14,6 +14,7 @@ from .services.clients import PlexClient, ServiceConfig
 from .services.network_enrichment import lookup_isp, reverse_dns
 from .services.settings_store import all_settings, media_server_label
 from .services.webhooks import notify_homeassistant
+from . import operations
 
 
 router = APIRouter()
@@ -35,6 +36,15 @@ STATUS_LABEL = {
 def _require_integration_read(context: AuthContext) -> None:
     if not (context.is_admin or context.has_scope('integrations.read') or context.has_scope('ha.read') or context.has_scope('mcp.read')):
         raise HTTPException(status_code=403, detail='Scope required: integrations.read')
+
+
+def _require_mcp_access(context: AuthContext) -> None:
+    if not (context.is_admin or any(context.has_scope(scope) for scope in ('integrations.read','ha.read','mcp.read',*[op.scope for op in operations.OPERATIONS]))):
+        raise HTTPException(403, 'MCP scope required')
+
+
+def _legacy_mcp_allowed(context):
+    return context is None or any(context.has_scope(scope) for scope in ('integrations.read','ha.read','mcp.read'))
 
 
 def _require_integration_write(context: AuthContext) -> None:
@@ -348,8 +358,8 @@ def _json_text(payload: Any) -> str:
     return json.dumps(payload, indent=2, sort_keys=True, default=str)
 
 
-def _mcp_tools() -> list[dict]:
-    return [
+def _mcp_tools(context=None) -> list[dict]:
+    legacy = [
         {
             'name': 'mediaops.status',
             'description': 'Current MediaOps live streams, active operations, request counts, and bandwidth.',
@@ -379,6 +389,7 @@ def _mcp_tools() -> list[dict]:
             },
         },
     ]
+    return (legacy if _legacy_mcp_allowed(context) else []) + operations.tools(context)
 
 
 def _pending_requests(db: Session, limit: int = 20) -> list[dict]:
@@ -430,7 +441,7 @@ def _history_search(db: Session, context: AuthContext, args: dict) -> list[dict]
 
 @router.post('/api/mcp')
 async def mcp_json_rpc(payload: dict = Body(...), db: Session = Depends(get_db), context: AuthContext = Depends(require_auth)):
-    _require_integration_read(context)
+    _require_mcp_access(context)
     method = payload.get('method')
     rpc_id = payload.get('id')
     params = payload.get('params') or {}
@@ -442,18 +453,25 @@ async def mcp_json_rpc(payload: dict = Body(...), db: Session = Depends(get_db),
                 'capabilities': {'tools': {}},
             }
         elif method == 'tools/list':
-            result = {'tools': _mcp_tools()}
+            result = {'tools': _mcp_tools(context)}
         elif method == 'tools/call':
             name = params.get('name')
             args = params.get('arguments') or {}
+            if name in ('mediaops.status','mediaops.overview','mediaops.pending_requests','mediaops.history_search') and not _legacy_mcp_allowed(context):
+                raise HTTPException(403, 'Scope required: mcp.read')
             if name == 'mediaops.status':
                 result = _mcp_tool_result(homeassistant_status_payload(db))
             elif name == 'mediaops.overview':
-                result = _mcp_tool_result(_overview_payload(db, int(args.get('days') or 30)))
+                overview = _overview_payload(db, int(args.get('days') or 30))
+                if context.has_scope('libraries.read'):
+                    overview['inventory'] = await operations.library_summary.summary(db)
+                result = _mcp_tool_result(overview)
             elif name == 'mediaops.pending_requests':
                 result = _mcp_tool_result(_pending_requests(db, int(args.get('limit') or 20)))
             elif name == 'mediaops.history_search':
                 result = _mcp_tool_result(_history_search(db, context, args))
+            elif isinstance(name, str) and name.startswith('mediaops.') and name[9:] in operations.BY_NAME:
+                result = _mcp_tool_result(await operations.execute(name[9:], args, db, context))
             else:
                 raise HTTPException(status_code=404, detail=f'Unknown tool: {name}')
         else:
@@ -461,11 +479,11 @@ async def mcp_json_rpc(payload: dict = Body(...), db: Session = Depends(get_db),
         return {'jsonrpc': '2.0', 'id': rpc_id, 'result': result}
     except HTTPException:
         raise
-    except Exception as exc:
-        return {'jsonrpc': '2.0', 'id': rpc_id, 'error': {'code': -32603, 'message': str(exc)}}
+    except Exception:
+        return {'jsonrpc': '2.0', 'id': rpc_id, 'error': {'code': -32603, 'message': 'Operation failed. Check the service report.'}}
 
 
 @router.get('/api/mcp')
 def mcp_info(context: AuthContext = Depends(require_auth)):
-    _require_integration_read(context)
-    return {'name': 'mediaops', 'transport': 'http-json-rpc', 'endpoint': '/api/mcp', 'tools': [tool['name'] for tool in _mcp_tools()]}
+    _require_mcp_access(context)
+    return {'name': 'mediaops', 'transport': 'http-json-rpc', 'endpoint': '/api/mcp', 'tools': [tool['name'] for tool in _mcp_tools(context)]}

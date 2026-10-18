@@ -55,6 +55,12 @@ class JsonServiceClient:
             ctype = response.headers.get('content-type','')
             return response.json() if 'json' in ctype else response.text
 
+    async def delete_json(self, path: str, payload: dict):
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.request('DELETE', f"{self.cfg.url.rstrip('/')}/{path.lstrip('/')}", headers=self._headers(), json=payload)
+            response.raise_for_status()
+            return response.json() if response.content else None
+
     async def delete(self, path: str, **params):
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.delete(f"{self.cfg.url.rstrip('/')}/{path.lstrip('/')}", headers=self._headers(), params=params)

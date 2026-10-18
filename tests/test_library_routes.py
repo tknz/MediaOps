@@ -42,7 +42,7 @@ class RouteTests(unittest.TestCase):
         from test_replacement_tracking import task
         saved=task();saved.update(status='Imported',actual_bytes=10_000_000_000,actual_saving_bytes=50_000_000_000)
         save(self.db,saved['id'],saved)
-        with patch.object(main,'current_user',return_value=self.user),patch.object(r,'current_rows',AsyncMock(return_value=[])) as inventory,patch.object(main.scheduler,'add_job') as scheduled:
+        with patch.object(main,'current_user',return_value=self.user),patch.object(r,'current_rows',AsyncMock(return_value=[])) as inventory,patch.object(main.job_engine,'enqueue') as scheduled:
             params='q=Irishman&source=Custom+Cinema&min_gb=25&managed=managed'
             html=self.client.get('/libraries/replacements?'+params)
             self.assertEqual(html.status_code,200);self.assertIn('source=Custom+Cinema',html.text)
@@ -52,7 +52,8 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(self.client.get('/api/libraries/replacements?min_gb=-1').status_code,422)
             response=self.client.post('/libraries/replacements/scan?'+params,headers={'Origin':'http://testserver'},follow_redirects=False)
             self.assertEqual(response.status_code,303);self.assertIn('source=Custom+Cinema',response.headers['location'])
-            self.assertEqual(scheduled.call_args.kwargs['kwargs']['q'],'Irishman')
+            self.assertEqual(scheduled.call_args.kwargs['options']['q'],'Irishman')
+            self.assertEqual(scheduled.call_args.args[1],'compact-replacements')
             pending=self.client.get('/libraries/replacements/jobs')
             self.assertNotIn('id="'+saved['id']+'"',pending.text)
             history=self.client.get('/libraries/replacements/jobs?view=complete')
@@ -147,5 +148,42 @@ class RouteTests(unittest.TestCase):
         with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)),patch.object(d,'remove_many',AsyncMock()) as remove:
             r=self.client.post('/libraries/audit/duplicates/remove-batch',data={'confirmation':'x','confirm':'delete'},headers={'Origin':'http://testserver'})
             self.assertEqual(r.status_code,403);remove.assert_not_awaited()
+
+    def test_streaming_filter_html_api_and_delete_review_authorization(self):
+        from app.services import streaming_availability as streaming, library_actions as actions
+        now=datetime.utcnow().isoformat()
+        save(self.db,streaming.KEY+'-NZ',dict(items={'tv:10':dict(checked_at=now,providers=[dict(id=8,name='Netflix')]),'tv:11':dict(checked_at=now,providers=[])}))
+        inv=[lib.normalise_series(dict(id=i,title='Series '+str(i),tmdbId=10+i,statistics=dict(sizeOnDisk=100+i)),'Kids',1) for i in range(2)]
+        lib.enrich_inventory_usage(self.db,inv)
+        with patch.object(main,'current_user',return_value=self.user),patch.object(lib,'library_inventory',AsyncMock(return_value=(inv,[]))),patch.object(lib,'plex_libraries',AsyncMock(return_value=[])):
+            data=self.client.get('/api/libraries?provider=8&source=Kids&page_size=1').json()
+            self.assertEqual(data['total_count'],1);self.assertEqual(data['total_bytes'],100);self.assertEqual(data['filters']['provider'],'8')
+            html=self.client.get('/libraries?provider=8&source=Kids&page_size=1')
+            self.assertEqual(html.status_code,200,html.text);self.assertIn('Netflix',html.text);self.assertIn('NZ',html.text)
+        item=dict(inv[0],streaming=dict(region='NZ',status='known',providers=[dict(id=8,name='Netflix')],checked_at=now,link=None))
+        review=dict(item=item,fingerprint='fingerprint',file_count=3,bytes=100)
+        with patch.object(main,'current_user',return_value=self.user),patch.object(actions,'inspect',AsyncMock(return_value=review)),patch.object(streaming,'refresh',AsyncMock()),patch.object(actions,'execute',AsyncMock(return_value=dict(title='Series',ok=True))) as execute,patch.object(main.scheduler,'add_job'):
+            html=self.client.get('/libraries/manage/delete-review?kind=series&source_index=1&item_id=0')
+            self.assertEqual(html.status_code,200,html.text);self.assertIn('Delete files, monitor future episodes',html.text);self.assertIn('Remove series completely',html.text);self.assertIn('Netflix',html.text)
+            api=self.client.get('/api/libraries/manage/delete-review?kind=series&source_index=1&item_id=0').json()
+            token=api['confirmation']
+            self.assertEqual(self.client.post('/api/libraries/manage/delete',json=dict(confirmation=token,mode='files_future'),headers={'Origin':'http://testserver'}).status_code,422)
+            execute.assert_not_awaited()
+            response=self.client.post('/api/libraries/manage/delete',json=dict(confirmation=token,mode='files_future',confirm='delete'),headers={'Origin':'http://testserver'})
+            self.assertEqual(response.status_code,200,response.text);execute.assert_awaited_once_with(self.db,token,'files_future','admin')
+        main.app.dependency_overrides[main.require_auth]=lambda:AuthContext('reader',False,scopes=frozenset({'libraries.delete'}))
+        self.assertEqual(self.client.get('/api/libraries/manage/delete-review?kind=series&source_index=1&item_id=0').status_code,403)
+        self.assertEqual(self.client.post('/api/libraries/manage/delete',json={},headers={'Origin':'http://testserver'}).status_code,403)
+        with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)):
+            self.assertEqual(self.client.get('/libraries/manage/delete-review?kind=series&source_index=1&item_id=0').status_code,403)
+
+    def test_legacy_download_delete_opens_review_without_deletion(self):
+        item=dict(kind='series',title='Example',source_index=1,id=7)
+        with patch.object(main,'current_user',return_value=self.user),patch.object(lib,'library_inventory',AsyncMock(return_value=([item],[]))),patch.object(lib,'delete_library_item',AsyncMock()) as delete:
+            result=self.client.post('/downloads/media/delete-files',data=dict(title='Example',request_type='tv'),headers={'Origin':'http://testserver'},follow_redirects=False)
+            self.assertEqual(result.status_code,303);self.assertIn('source_index=1',result.headers['location']);self.assertIn('delete-review',result.headers['location']);delete.assert_not_awaited()
+        with patch.object(main,'current_user',return_value=self.user),patch.object(lib,'library_inventory',AsyncMock(return_value=([item,dict(item,source_index=0)],[]))):
+            result=self.client.post('/downloads/media/delete-files',data=dict(title='Example',request_type='tv'),headers={'Origin':'http://testserver'},follow_redirects=False)
+            self.assertEqual(result.status_code,303);self.assertNotIn('delete-review',result.headers['location'])
 
 if __name__=='__main__':unittest.main()

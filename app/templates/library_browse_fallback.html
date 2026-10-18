@@ -1,4 +1,6 @@
+{% from '_streaming.html' import streaming %}
 <h1>Libraries</h1>
+{% if request.query_params.get('notice') %}<p role="status">{{ request.query_params.get('notice') }}</p>{% endif %}
 <p><a href="/libraries?preset=tv-cleanup">TV cleanup: older than two years</a> · <a href="/libraries/audit/report">Duplicates, storage efficiency and health</a></p>
 <p>{{ payload.coverage }}</p>
 {% set f = payload.filters %}
@@ -7,6 +9,7 @@
 <label>Title or path <input name="q" value="{{ f.q }}"></label>
 <label>Type <select name="kind">{% for v,t in [('all','All'),('series','TV'),('movie','Movies')] %}<option value="{{ v }}" {% if f.kind==v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
 <label>Source <select name="source">{% for v in ['all']+payload.sources %}<option {% if f.source==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
+<label>Streaming ({{ payload.streaming_region }}) <select name="provider">{% for v,t in [('all','Any platform'),('unknown','Unknown / out of date'),('none','No subscription listing')] %}<option value="{{ v }}" {% if f.provider==v %}selected{% endif %}>{{ t }}</option>{% endfor %}{% for p in payload.streaming_providers %}<option value="{{ p.id }}" {% if f.provider==p.id|string %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
 <label>Inactivity months <select name="months">{% for v in [6,12,24] %}<option {% if f.months==v %}selected{% endif %}>{{ v }}</option>{% endfor %}</select></label>
 <label>Or before date (UTC) <input type="date" name="before" value="{{ f.before }}"></label>
 <label>History <select name="history">{% for v,t in [('all','All history'),('recorded','Recorded before cutoff'),('unknown','No recorded history'),('include','Before cutoff plus no history'),('ambiguous','Ambiguous identity')] %}<option value="{{ v }}" {% if f.history==v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
@@ -17,7 +20,9 @@
 </form>
 <p>{{ payload.total_count }} results · {{ payload.total_bytes_label }} · cutoff {{ payload.cutoff }} UTC · page {{ payload.page }}/{{ payload.pages }}{% if f.viewer %} · ONLY {{ f.viewer }}; other viewers may have watched recently{% endif %}</p>
 {% for error in payload.errors %}<p>Source unavailable: {{ error }}</p>{% endfor %}
-<table class="media-table"><thead><tr><th>Title</th><th>Source</th><th>Size</th><th>Last watched UTC</th><th>Who watched last</th><th>Episodes/files</th><th>Monitoring</th><th>Playback</th></tr></thead><tbody>
-{% for i in payload['items'] %}<tr><td><a href="/libraries?q={{ i.title|urlencode }}&kind={{ i.kind }}&source={{ i.source|urlencode }}">{{ i.title }}</a></td><td>{{ i.source }}</td><td>{{ i.size_label }}</td><td>{{ i.last_watched_at or i.history_status }}</td><td>{{ i.last_watched_by or '—' }}</td><td>{{ i.quality }}</td><td>{{ 'Monitored' if i.monitored else 'Not monitored' }}</td><td>{{ i.active_viewers|join(', ') }}</td></tr>{% endfor %}
+<p class="muted">Subscription listings: {{ payload.streaming_coverage.known }}/{{ payload.streaming_coverage.total }} checked · {{ payload.streaming_region }} · TMDB / JustWatch via Seerr. Seasons may differ.</p>
+{% if user.is_admin %}<form method="post" action="/libraries/streaming/refresh"><button>Refresh streaming availability</button></form>{% endif %}
+<table class="media-table"><thead><tr><th>Title</th><th>Source</th><th>Streaming</th><th>Size</th><th>Last watched UTC</th><th>Who watched last</th><th>Episodes/files</th><th>Monitoring</th><th>Playback</th><th></th></tr></thead><tbody>
+{% for i in payload['items'] %}<tr><td><a href="/libraries?q={{ i.title|urlencode }}&kind={{ i.kind }}&source={{ i.source|urlencode }}">{{ i.title }}</a></td><td>{{ i.source }}</td><td>{{ streaming(i.streaming) }}</td><td>{{ i.size_label }}</td><td>{{ i.last_watched_at or i.history_status }}</td><td>{{ i.last_watched_by or '—' }}</td><td>{{ i.quality }}</td><td>{{ 'Monitored' if i.monitored else 'Not monitored' }}</td><td>{{ i.active_viewers|join(', ') }}</td><td>{% if user.is_admin %}<a href="/libraries/manage/delete-review?kind={{ i.kind }}&source_index={{ i.source_index }}&item_id={{ i.id }}">Delete…</a>{% endif %}</td></tr>{% endfor %}
 </tbody></table>
 {% if payload.previous_url %}<a href="{{ payload.previous_url }}">Previous</a>{% endif %} {% if payload.next_url %}<a href="{{ payload.next_url }}">Next</a>{% endif %}

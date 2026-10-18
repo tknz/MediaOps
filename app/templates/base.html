@@ -8,7 +8,7 @@
   {% if user and user.is_admin %}<script src="/static/request-notifier.js" defer></script>{% endif %}
 </head>
 <body>
-<header><a href="/">MediaOps</a>{% if user %}<span class="server-pill">{{ media_server_label() }}</span><nav><a href="/admin">Overview</a><a href="/users">Users</a><a href="/live">Live</a><a href="/graphs">Graphs</a><a href="/requests">Requests</a><a href="/history">History</a><a href="/libraries">Libraries</a><a href="/settings">Settings</a></nav><a class="now-chip" id="nowChip" href="/live" aria-label="Open playback and downloads"><b>Now</b><span>Loading…</span></a>{% if user.is_admin %}<div id="requestNotifier" class="request-notifier" aria-live="polite"></div>{% endif %}<span>{{ user.username }}</span><form class="inline-form" method="post" action="/logout"><button class="link-button" type="submit">Sign out</button></form>{% endif %}</header>
+<header><a href="/">MediaOps</a>{% if user %}<span class="server-pill">{{ media_server_label() }}</span><nav><a href="/admin">Overview</a><a href="/users">Users</a><a href="/live">Live</a><a href="/graphs">Graphs</a><a href="/requests">Requests</a><a href="/history">History</a><a href="/libraries">Libraries</a>{% if user.is_admin %}<a href="/jobs">Jobs</a>{% endif %}<a href="/settings">Settings</a></nav><a class="now-chip" id="nowChip" href="/live" aria-label="Open playback and downloads"><b>Now</b><span>Loading…</span></a>{% if user.is_admin %}<div id="requestNotifier" class="request-notifier" aria-live="polite"></div>{% endif %}<span>{{ user.username }}</span><form class="inline-form" method="post" action="/logout"><button class="link-button" type="submit">Sign out</button></form>{% endif %}</header>
 <main>{% block content %}{% endblock %}</main>
 {% if user %}<script>
 (function(){

@@ -6,6 +6,49 @@ is an ancestor, with three intervening existing commits; this change is not a
 release payload approval. Work lives in an isolated source snapshot under the
 registered project, preserving the archived repository and config-wizard.
 
+## Series file deletion and streaming availability
+
+Libraries → Delete… opens a live review of the source, exact file count/bytes,
+monitoring and country-specific subscription streaming. TV has two explicit modes:
+`files_future` deletes episode files through Sonarr's episode-file bulk API,
+keeps the series monitored, unmonitors aired/stored episodes, monitors upcoming
+or unscheduled episodes, and enables monitoring of new seasons. Existing special
+episode monitoring is respected for upcoming specials. No search is started.
+`remove` retains the existing complete native Arr removal with files.
+Configured source recycle-bin behavior applies; MediaOps playback history is retained.
+
+HTML and JSON review endpoints: `/libraries/manage/delete-review` and
+`/api/libraries/manage/delete-review`, with `kind`, `source_index`, `item_id`.
+Deletion POSTs now require a short-lived signed `confirmation`, `mode` and
+`confirm=delete`; the former ID-only deletion request is rejected. Admin access
+is required. A changed source/file/monitoring snapshot, current Plex playback or
+owned Arr queue activity blocks execution. A durable manifest prevents replay
+after success, timeout or partial completion. Partial failures require source
+review rather than automatic retry. Requests' older Delete files control opens
+the same review and asks the user to choose a source if ownership is ambiguous.
+
+`streaming_region` (Settings → Jobs, `STREAMING_REGION` in the saved config)
+defaults to NZ and accepts a two-letter country code. Streaming metadata reuses
+the configured Seerr connection and TMDB IDs; missing Sonarr IDs can be bridged
+through unambiguous Plex TVDB→TMDB IDs. Titles and original network labels are
+never used to guess current availability. Only `flatrate` subscription providers
+are included, excluding rental/purchase offers. Data is cached for 24 hours;
+background batches check up to 100 identities per minute with four simultaneous
+reads. Manual refresh checks the entire library in the background. No Seerr
+connection, missing identity, failed lookup and expired data remain visibly
+unknown/out of date, and do not qualify for a provider filter. Errors are stored
+without credential-bearing messages/URLs. Series listings do not establish that
+every season or episode is available.
+
+Provider filters (`provider=<id>`, `all`, `none`, `unknown`) apply before paging
+and totals, and persist in HTML/JSON URLs. Platform, country and checked date
+appear in the table, item details and deletion review. Original network is
+displayed separately. Availability never triggers automatic deletion.
+
+Native API references:
+- https://sonarr.tv/docs/api/ (episode file bulk deletion, episode monitoring, series editor)
+- https://docs.seerr.dev/api/get-tv-details/ (watchProviders)
+
 ## TV cleanup
 
 Open `/libraries?preset=tv-cleanup`. Defaults: TV, recorded playback strictly
