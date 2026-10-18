@@ -23,7 +23,7 @@ class SelectionTests(unittest.TestCase):
         big=release(size=29*GB,approved=False,rejections=['27.3 GB is larger than maximum allowed 13.8 GB (for Hellboy)'])
         chosen=r.choose(movie(),[big]);self.assertTrue(chosen['above_target']);self.assertEqual(chosen['bytes'],29*GB)
         self.assertFalse(r.eligible(movie(),big));self.assertTrue(r.eligible(movie(),big,above_target=True))
-        for changes in [dict(rejections=big['rejections']+['English is wanted, but found French']),dict(rejections=['Existing file on disk is of equal or higher preference']),dict(title='Hellboy.2019.2160p.HDR.HEVC'),dict(quality=dict(quality=dict(resolution=2160,modifier='remux'))),dict(customFormatScore=-50),dict(size=60*GB),dict(edition='Extended')]:
+        for changes in [dict(rejections=big['rejections']+['English is wanted, but found French']),dict(rejections=['Existing file on disk is of equal or higher preference']),dict(quality=dict(quality=dict(resolution=2160,modifier='remux'))),dict(customFormatScore=-50),dict(size=60*GB),dict(edition='Extended')]:
             with self.subTest(changes=changes):self.assertFalse(r.eligible(movie(),dict(big,**changes),above_target=True))
         self.assertFalse(r.choose(movie(),[big,release()])['above_target'])
         marginal=release(size=59*GB,approved=False,rejections=big['rejections'])

@@ -7,6 +7,7 @@ import shlex
 from threading import Lock
 
 from ..config import settings
+from .compact_policy import PREFERENCE_DEFAULTS
 
 
 DEFAULTS = {
@@ -28,6 +29,7 @@ DEFAULTS = {
     'sonarr_api_key': settings.sonarr_api_key,
     'radarr_instances': settings.radarr_instances or '[]',
     'sonarr_instances': settings.sonarr_instances or '[]',
+    'space_review_min_gb': '25',
     'job_plex_live_seconds': '30',
     'job_downloads_seconds': '30',
     'job_plex_accounts_minutes': '60',
@@ -77,6 +79,7 @@ CONFIG_KEYS = {
     'RADARR_API_KEY': 'radarr_api_key',
     'SONARR_URL': 'sonarr_url',
     'SONARR_API_KEY': 'sonarr_api_key',
+    'SPACE_REVIEW_MIN_GB': 'space_review_min_gb',
     'JOB_PLEX_LIVE_SECONDS': 'job_plex_live_seconds',
     'JOB_DOWNLOADS_SECONDS': 'job_downloads_seconds',
     'JOB_PLEX_ACCOUNTS_MINUTES': 'job_plex_accounts_minutes',
@@ -102,6 +105,7 @@ WRITE_ORDER = [
     'sabnzbd_api_key',
     'radarr_instances',
     'sonarr_instances',
+    'space_review_min_gb',
     'job_plex_live_seconds',
     'job_downloads_seconds',
     'job_plex_accounts_minutes',
@@ -111,6 +115,10 @@ WRITE_ORDER = [
     'local_auth_username',
     'local_auth_password_hash',
 ]
+
+DEFAULTS.update(PREFERENCE_DEFAULTS)
+CONFIG_KEYS.update({key.upper():key for key in PREFERENCE_DEFAULTS})
+WRITE_ORDER.extend(PREFERENCE_DEFAULTS)
 
 _LOCK = Lock()
 

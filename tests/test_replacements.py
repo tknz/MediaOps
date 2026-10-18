@@ -18,7 +18,7 @@ def release(**changes):
 class CandidateTests(unittest.TestCase):
     def test_resolution_codec_hdr_identity_language_size_and_native_rejection(self):
         m=movie();self.assertTrue(r.eligible(m,release()))
-        for changes in [dict(approved=False),dict(rejections=['Blocked']),dict(title='Hellboy.2019.2160p.H264'),dict(title='Hellboy.2019.2160p.HEVC.HDR10'),dict(title='Hellboy.2019.2160p.HEVC.TrueHD.7.1'),dict(title='Hellboy.2004.2160p.HEVC'),dict(movieTitles=['A Different Film']),dict(languages=[dict(id=2)]),dict(edition='Extended'),dict(size=19*GB),dict(quality=dict(quality=dict(resolution=1080,modifier='none')))]:
+        for changes in [dict(approved=False),dict(rejections=['Blocked']),dict(title='Hellboy.2019.2160p.H264'),dict(title='Hellboy.2019.2160p.HEVC.TrueHD.7.1'),dict(title='Hellboy.2004.2160p.HEVC'),dict(movieTitles=['A Different Film']),dict(languages=[dict(id=2)]),dict(edition='Extended'),dict(size=26*GB),dict(quality=dict(quality=dict(resolution=1080,modifier='none')))]:
             with self.subTest(changes=changes):self.assertFalse(r.eligible(m,release(**changes)))
     def test_audio_then_smallest_and_unknown_is_honest(self):
         stereo=release(size=11*GB);surround=release(title='Hellboy.2019.2160p.HEVC.5.1',size=8*GB)

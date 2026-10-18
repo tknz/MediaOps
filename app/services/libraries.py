@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import calendar
 import unicodedata
+import re
 from urllib.parse import urlencode
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -11,7 +12,7 @@ from sqlalchemy import case, func, or_, select, any_, bindparam, Integer
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 
-from ..models import PlexSession, ActivePlexSession, PlexLibraryItem
+from ..models import PlexSession, ActivePlexSession, PlexLibraryItem, LibraryAuditState
 from .clients import PlexClient, RadarrClient, ServiceConfig, SonarrClient
 from .settings_store import all_settings
 
@@ -80,6 +81,7 @@ def normalise_movie(row: dict[str, Any], source: str, index: int) -> dict[str, A
     return {
         'kind': 'movie', 'id': row.get('id'), 'title': row.get('title') or 'Untitled movie',
         'year': row.get('year'), 'source': source, 'source_index': index,
+        'aliases': [t['title'] for t in row.get('alternateTitles', []) if t.get('title')],
         'tmdb_id': row.get('tmdbId'), 'tvdb_id': row.get('tvdbId'),
         'episode_count': (row.get('statistics') or {}).get('episodeFileCount', 0),
         'path': row.get('path'), 'size': size, 'size_label': format_bytes(size),
@@ -97,6 +99,7 @@ def normalise_series(row: dict[str, Any], source: str, index: int) -> dict[str, 
     return {
         'kind': 'series', 'id': row.get('id'), 'title': row.get('title') or 'Untitled series',
         'year': row.get('year'), 'source': source, 'source_index': index,
+        'aliases': [t['title'] for t in row.get('alternateTitles', []) if t.get('title')],
         'tmdb_id': row.get('tmdbId'), 'tvdb_id': row.get('tvdbId'),
         'episode_count': (row.get('statistics') or {}).get('episodeFileCount', 0),
         'path': row.get('path'), 'size': size, 'size_label': format_bytes(size),
@@ -162,24 +165,66 @@ def inv_watch_key(item: dict[str, Any]) -> tuple[str, str]:
 
 
 def normalized_title(value: str) -> str:
-    return ' '.join(unicodedata.normalize('NFKC', value or '').casefold().split())
+    return ' '.join(''.join(c if c.isalnum() else ' ' for c in unicodedata.normalize('NFKC', value or '').casefold()).split())
+
+
+def title_aliases(value, year=None):
+    result = {normalized_title(value)}
+    suffix = re.search(r'\s*\((\d{4})\)\s*$', value or '')
+    if suffix and year and int(suffix[1]) == int(year):
+        result.add(normalized_title(value[:suffix.start()]))
+    return result - {''}
+
+
+def plex_catalogue(db, owners_only=False):
+    row = db.get(LibraryAuditState, 'plex-history-catalogue') if owners_only else None
+    if row is None:row = db.get(LibraryAuditState, 'plex-file-catalogue')
+    if not row: return {}
+    try: return json.loads(row.payload)
+    except (ValueError, TypeError): return {}
 
 
 def history_index(db: Session, inventory: list[dict]):
     titles, keys = {}, {}
     for i, item in enumerate(inventory):
-        titles.setdefault(('show' if item['kind'] == 'series' else 'movie', normalized_title(item['title'])), []).append(i)
+        kind = 'show' if item['kind'] == 'series' else 'movie'
+        for name in [item['title']] + item.get('aliases', []):
+            for alias in title_aliases(name, item.get('year')):
+                if i not in titles.setdefault((kind, alias), []): titles[(kind, alias)].append(i)
+    # Live Plex external IDs bridge renamed catalogue titles without guessing filesystem roots.
+    for owner in plex_catalogue(db,owners_only=True).get('owners', []):
+        kind = owner['kind']
+        if kind not in ('movie','show'):continue
+        candidates = [i for i, item in enumerate(inventory) if ('show' if item['kind']=='series' else 'movie') == kind and
+            ((owner.get('tvdb_id') and item.get('tvdb_id') == owner['tvdb_id']) if kind=='show' else
+             (owner.get('tmdb_id') and item.get('tmdb_id') == owner['tmdb_id']))]
+        if not candidates:
+            candidates = titles.get((kind, normalized_title(owner.get('title'))), [])
+            candidates = [i for i in candidates if not owner.get('year') or inventory[i].get('year') == owner['year']]
+            identity_field = 'tvdb_id' if kind=='show' else 'tmdb_id'
+            if owner.get(identity_field):
+                if any(inventory[i].get(identity_field) and inventory[i][identity_field]!=owner[identity_field] for i in candidates):
+                    for alias in title_aliases(owner.get('title'),owner.get('year')):keys[('ambiguous',kind,alias)]=True
+                candidates=[i for i in candidates if not inventory[i].get(identity_field) or inventory[i][identity_field]==owner[identity_field]]
+        identities = {(inventory[i].get('tvdb_id'), inventory[i].get('tmdb_id'), inventory[i].get('year')) for i in candidates}
+        if not candidates or len(identities) != 1: continue
+        for alias in title_aliases(owner.get('title'), owner.get('year')):
+            titles[(kind, alias)] = sorted(set(titles.get((kind, alias), []) + candidates))
+        for rating in owner.get('rating_keys', []): keys[(kind, str(rating))] = candidates
+        for i in candidates:
+            # Plex recency can disprove inactivity even when its viewer is unavailable.
+            keys[('plex_last', i)] = max(keys.get(('plex_last', i), 0), int(owner.get('last_viewed_at') or 0))
     # Plex catalogue key is scoped to this server. Link only a unique title/year identity.
     for row in db.scalars(select(PlexLibraryItem)):
         name = normalized_title(row.title)
         candidates = titles.get((row.media_type, name), [])
         if row.year and any(inventory[i].get('year') and inventory[i]['year'] != row.year for i in candidates):
             keys[('ambiguous', row.media_type, name)] = True
-        keys[(row.media_type, str(row.rating_key or row.key))] = []
+        key = (row.media_type, str(row.rating_key or row.key))
         candidates = [i for i in candidates if not row.year or inventory[i].get('year') == row.year]
         identities = {(inventory[i].get('tvdb_id'), inventory[i].get('tmdb_id'), inventory[i].get('year')) for i in candidates}
-        if candidates and len(identities) == 1:
-            keys[(row.media_type, str(row.rating_key or row.key))] = candidates
+        if key not in keys:
+            keys[key] = candidates if candidates and len(identities) == 1 else []
     return titles, keys
 
 
@@ -220,8 +265,12 @@ def enrich_inventory_usage(db: Session, inventory: list[dict[str, Any]], viewer:
         matches, ambiguous = match_history(row, inventory, titles, keys)
         for i in matches:
             usage[i]['active'].append(row.username)
-    for item, data in zip(inventory, usage):
+    for i, (item, data) in enumerate(zip(inventory, usage)):
         last = data['last']
+        plex_last = keys.get(('plex_last', i), 0) if not viewer else 0
+        if plex_last and (not last or datetime.utcfromtimestamp(plex_last) > last):
+            last = datetime.utcfromtimestamp(plex_last)
+            data['last_user'] = 'Plex (viewer unavailable)'
         item.update(plays=data['plays'], watch_hours=round(data['seconds']/3600, 1), streamed_bytes=data['bytes'],
                     last_watched_at=last, last_watched_by=data['last_user'],
                     history_status='ambiguous' if data['ambiguous'] else ('recorded' if last else 'unknown'),

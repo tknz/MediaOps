@@ -60,6 +60,18 @@
   </div>
 
   <div class="settings-tab-panel" data-settings-panel="jobs">
+  <section class="panel"><div class="section-head"><h2>Storage review &amp; replacements</h2><a href="/libraries/space">Large files →</a></div><div class="job-grid">
+  <label>Flag files over (GB)<input type="number" min="0" max="100000" step="0.1" name="space_review_min_gb" value="{{ values.space_review_min_gb }}"></label>
+  <label>Replacement size target (GB)<input type="number" min="0" step="0.1" name="replacement_max_gb" value="{{ values.replacement_max_gb }}"></label>
+  <label>Minimum reduction (%)<input type="number" min="0" max="95" name="replacement_min_percent" value="{{ values.replacement_min_percent }}"></label>
+  <label>Minimum reduction (GB)<input type="number" min="0" step="0.1" name="replacement_min_gb" value="{{ values.replacement_min_gb }}"></label>
+  <label>Movies per replacement scan<input type="number" min="1" max="500" name="replacement_scan_limit" value="{{ values.replacement_scan_limit }}"></label>
+  <label>Language<select name="replacement_language_id"><option value="1" {% if values.replacement_language_id=='1' %}selected{% endif %}>English</option><option value="0" {% if values.replacement_language_id=='0' %}selected{% endif %}>Use Arr profile</option></select></label>
+  <label>4K codec<select name="replacement_4k_codec"><option value="hevc" {% if values.replacement_4k_codec=='hevc' %}selected{% endif %}>Require HEVC</option><option value="any" {% if values.replacement_4k_codec=='any' %}selected{% endif %}>Use Arr profile</option></select></label>
+  <label>HDR<select name="replacement_hdr">{% for value,label in [('prefer_sdr','Prefer SDR; allow HDR'),('exclude','Exclude HDR'),('allow','Use Arr scores')] %}<option value="{{ value }}" {% if values.replacement_hdr==value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Audio<select name="replacement_audio"><option value="stereo" {% if values.replacement_audio=='stereo' %}selected{% endif %}>Prefer stereo; allow 5.1</option><option value="smallest" {% if values.replacement_audio=='smallest' %}selected{% endif %}>Prefer smallest file</option></select></label>
+  <label>Lossless / 7.1 audio<select name="replacement_lossless"><option value="exclude" {% if values.replacement_lossless=='exclude' %}selected{% endif %}>Exclude</option><option value="allow" {% if values.replacement_lossless=='allow' %}selected{% endif %}>Allow</option></select></label>
+  </div><p class="muted">Arr profile approvals remain required. These preferences do not change Arr configuration. Zero size target means no additional cap. A smaller fallback above the target needs explicit review.</p></section>
   <section class="panel"><div class="section-head"><div><h2>Smaller replacements</h2><p class="muted">Weekly · largest 50 movies · includes unmonitored</p></div><a class="mini link-mini" href="/libraries/replacements">Review replacements →</a></div></section>
   <section class="panel"><div class="section-head"><div><p class="eyebrow">Scheduled jobs</p><h2>Background refresh</h2><p class="muted">Regular work MediaOps runs itself. Tautulli history import runs when Tautulli is first connected; live history comes from Plex after that.</p></div></div><div class="job-grid">{% for job in jobs %}<label class="job-card"><span><b>{{ job.label }}</b><small>{{ job.description }}</small>{% if job.next_run %}<small>Next: {{ job.next_run.strftime('%Y-%m-%d %H:%M') }}</small>{% endif %}</span><input name="{{ job.setting }}" value="{{ job.value }}"><em>{{ job.unit }}</em></label>{% endfor %}</div></section>
   </div>

@@ -22,21 +22,23 @@ def file_stamp(movie):
     f=movie.get('movieFile') or {}
     return digest([movie.get('id'),movie.get('tmdbId'),movie.get('qualityProfileId'),movie.get('monitored'),f.get('id'),f.get('path'),f.get('size'),f.get('quality'),f.get('edition')])
 
-def eligible(movie, release, *, above_target=False):
+def eligible(movie, release, *, above_target=False, preferences=None):
     """Only a size-only native rejection may be offered as an explicit fallback."""
+    prefs=preferences if preferences is not None else policy.preferences()
     rejects=release.get('rejections') or []
     size_only=bool(rejects) and all(re.fullmatch(r'.+ is larger than maximum allowed .+ \(for .+\)',str(reason)) for reason in rejects)
     if not release.get('downloadAllowed'):return False
     if not release.get('approved') or rejects:
-        if not (above_target and size_only and release.get('customFormatScore',0)>=0):return False
+        if not (above_target and size_only and release.get('customFormatScore',0)>=movie.get('_min_format_score',0)):return False
     title=release.get('title') or ''; q=(release.get('quality') or {}).get('quality') or {}
     current=(movie['movieFile'].get('quality') or {}).get('quality') or {}
     if q.get('resolution')!=current.get('resolution') or q.get('resolution',0)<720:return False
-    if q.get('modifier')!='none' or re.search(policy.HDR,title) or re.search(r'(?i)\b(?:remux|bdremux|bdmv|complete|3d)\b',title):return False
-    if q['resolution']>=2160 and not re.search(policy.HEVC,title):return False
-    if re.search(policy.LOSSLESS,title):return False
+    if q.get('modifier')!='none' or re.search(r'(?i)\b(?:remux|bdremux|bdmv|complete|3d)\b',title):return False
+    if prefs['replacement_hdr']=='exclude' and re.search(policy.HDR,title):return False
+    if prefs['replacement_4k_codec']=='hevc' and q['resolution']>=2160 and not re.search(policy.HEVC,title):return False
+    if prefs['replacement_lossless']=='exclude' and re.search(policy.LOSSLESS,title):return False
     # Require an explicit English match and matching parsed title/year. TMDB alone is insufficient.
-    if not any(x.get('id')==1 for x in release.get('languages',[])):return False
+    if prefs['replacement_language_id'] and not any(x.get('id')==prefs['replacement_language_id'] for x in release.get('languages',[])):return False
     names={normal(movie['title']),normal(movie.get('originalTitle') or movie['title'])}
     names.update(normal(t.get('title')) for t in movie.get('alternateTitles',[]) if t.get('title'))
     if not names.intersection(normal(t) for t in release.get('movieTitles',[])):return False
@@ -44,20 +46,24 @@ def eligible(movie, release, *, above_target=False):
     if str(movie.get('year')) not in years:return False
     if normal(release.get('edition') or '')!=normal(movie['movieFile'].get('edition') or ''):return False
     size=int(release.get('size') or 0); old=int(movie['movieFile'].get('size') or 0)
-    ceiling=policy.ceiling_bytes(movie.get('runtime'),q['resolution'])
-    return bool(size and ceiling and size<old and (above_target or (size<=ceiling and size<=old*.8 and old-size>=2_000_000_000)))
+    ceiling=policy.replacement_ceiling(movie,release,prefs)
+    return bool(size and size<old and (above_target or ((not ceiling or size<=ceiling) and size<=old*(1-prefs['replacement_min_percent']/100) and old-size>=prefs['replacement_min_gb']*1e9)))
 
 def choose(movie, releases):
-    candidates=[r for r in releases if eligible(movie,r)]
+    prefs=policy.preferences()
+    candidates=[r for r in releases if eligible(movie,r,preferences=prefs)]
     # Prefer stereo, then 5.1; use smallest acceptable file within that tier.
-    candidates.sort(key=lambda r:({'Stereo':0,'5.1':1,'Not stated':2}.get(policy.audio_label(r['title']),3),r['size'],release_key(r)))
+    def preference(r):return (bool(re.search(policy.HDR,r['title'])) if prefs['replacement_hdr']=='prefer_sdr' else False,
+        {'Stereo':0,'5.1':1,'Not stated':2}.get(policy.audio_label(r['title']),3) if prefs['replacement_audio']=='stereo' else 0,r['size'],release_key(r))
+    candidates.sort(key=preference)
     above_target=False
     if not candidates:
-        candidates=sorted([r for r in releases if eligible(movie,r,above_target=True)],key=lambda r:(r['size'],release_key(r)))
+        candidates=sorted([r for r in releases if eligible(movie,r,above_target=True,preferences=prefs)],key=preference)
         above_target=True
     if not candidates:return None
     r=candidates[0]
-    return dict(key=release_key(r),title=r['title'],bytes=r['size'],saving_bytes=movie['movieFile']['size']-r['size'],audio=policy.audio_label(r['title']),format=r['quality']['quality']['name'],codec='HEVC' if re.search(policy.HEVC,r['title']) else 'Not stated',range='SDR label' if re.search(r'(?i)\bSDR\b',r['title']) else 'No HDR label',score=r.get('customFormatScore',0),fallback=above_target,above_target=r['size']>policy.ceiling_bytes(movie.get('runtime'),r['quality']['quality']['resolution']),target_bytes=policy.ceiling_bytes(movie.get('runtime'),r['quality']['quality']['resolution']))
+    ceiling=policy.replacement_ceiling(movie,r,prefs)
+    return dict(key=release_key(r),title=r['title'],bytes=r['size'],saving_bytes=movie['movieFile']['size']-r['size'],audio=policy.audio_label(r['title']),format=r['quality']['quality']['name'],codec='HEVC' if re.search(policy.HEVC,r['title']) else 'Not stated',range='HDR label' if re.search(policy.HDR,r['title']) else 'SDR label' if re.search(r'(?i)\bSDR\b',r['title']) else 'No HDR label',score=r.get('customFormatScore',0),fallback=above_target,above_target=bool(ceiling and r['size']>ceiling),target_bytes=ceiling)
 
 def row(movie, inst):
     f=movie['movieFile']; q=(f.get('quality') or {}).get('quality') or {}; info=f.get('mediaInfo') or {}
@@ -66,9 +72,18 @@ def row(movie, inst):
 async def inventory(instances):
     values=[]
     for inst in instances:
+        definitions,profiles=await asyncio.gather(inst['client'].get('/api/v3/qualitydefinition'),inst['client'].get('/api/v3/qualityprofile'))
         for movie in await inst['client'].movies():
-            if movie.get('movieFile',{}).get('size'):values.append((inst,movie))
-    return sorted(values,key=lambda item:(-item[1]['movieFile']['size'],item[0]['index'],item[1]['id']))[:50]
+            if movie.get('movieFile',{}).get('size'):
+                native_constraints(movie,definitions,profiles)
+                values.append((inst,movie))
+    return sorted(values,key=lambda item:(-item[1]['movieFile']['size'],item[0]['index'],item[1]['id']))[:policy.preferences()['replacement_scan_limit']]
+
+
+def native_constraints(movie,definitions,profiles):
+    movie['_replacement_definitions']={str(d['quality']['id']):d.get('maxSize') for d in definitions if d.get('quality')} if isinstance(definitions,list) else {}
+    native=next((p for p in profiles if p['id']==movie['qualityProfileId']),{}) if isinstance(profiles,list) else {}
+    movie['_min_format_score']=native.get('minFormatScore',0)
 
 async def queued(client,movie_id):
     # Narrow native queue query returns full matching total, including unmonitored movies.
@@ -98,12 +113,14 @@ async def scan(db):
                 await asyncio.sleep(.25)
             report['status']='complete'
         except Exception:
-            report['status']='failed';report['errors']=['Could not load both Radarr inventories. Run the check again.']
+            report['status']='failed';report['errors']=['Could not load configured Radarr inventories. Run the check again.']
         report['checked_at']=stamp();audit.save(db,KEY,report)
         return report
 
 def payload(db):
     report=audit.state(db,KEY) or dict(rows=[],status='not_run',done=0)
+    report['preferences']=policy.preferences()
+    report['scan_limit']=report['preferences']['replacement_scan_limit']
     for row in report['rows']:
         if row['status']=='No suitable release':row['note']='No approved release meets the replacement rules.'
     report['operations']=tracking.summary(db)
@@ -141,6 +158,8 @@ async def inspect_one(db, selection, instances, *, check_release=True):
     if not relative:raise ValueError('Missing file path; review in Radarr.')
     if any(str(s.get('file') or '').endswith('/'+relative) or (not s.get('file') and normal(s.get('title'))==normal(movie['title'])) for s in sessions):raise ValueError(r['title']+' is playing now.')
     if not check_release:return c,None,r
+    definitions,profiles=await asyncio.gather(c.get('/api/v3/qualitydefinition'),c.get('/api/v3/qualityprofile'))
+    native_constraints(movie,definitions,profiles)
     releases=await c.releases(movie['id'])
     release=next((x for x in releases if release_key(x)==selection['candidate']),None)
     if not release or not eligible(movie,release,above_target=bool(r['candidate'].get('fallback') or r['candidate'].get('above_target'))) or release['size']!=r['candidate']['bytes']:raise ValueError(r['title']+': release is no longer approved. Run the check again.')

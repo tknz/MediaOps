@@ -8,7 +8,7 @@ from .libraries import arr_clients, movie_size, series_size
 from .settings_store import all_settings
 
 _lock = asyncio.Lock()
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 async def plex_items(client, library, media_type):
     start = 0
@@ -34,13 +34,22 @@ async def plex_summary(values):
             kind = library['type']; media_type = {'movie':1,'show':4,'artist':10,'photo':13}.get(kind)
             if media_type is None: return None
             personal = kind == 'movie' and str(library.get('agent') or '').endswith('.none')
-            result = dict(source=library['title'], kind='video' if personal else kind, paths={}, movies=set(), shows=set(), tracks=set(), videos=set(), photos=set(), episode_paths=set(), errors=[])
+            result = dict(source=library['title'], kind='video' if personal else kind, paths={}, movies=set(), shows=set(), tracks=set(), videos=set(), photos=set(), episode_paths=set(), errors=[],catalogue_files=[],catalogue_owners=[])
             try:
-                shows = {}
+                from .space_review import plex_owner,plex_file
+                shows = {};show_owners={}
                 if kind == 'show':
                     async for node in plex_items(client, library, 2):
                         shows[node.get('ratingKey')] = identity(node, library)
+                        show_owners[node.get('ratingKey')] = plex_owner(node,'show')
+                    result['catalogue_owners'].extend(show_owners.values())
                 async for node in plex_items(client, library, media_type):
+                    owner=show_owners.get(node.get('grandparentRatingKey')) if kind=='show' else None
+                    if owner is None:
+                        owner=plex_owner(node,'show' if kind=='show' else 'video' if personal else kind)
+                        if kind=='show':owner['title']=node.get('grandparentTitle') or owner['title']
+                        result['catalogue_owners'].append(owner)
+                    owner['last_viewed_at']=max(owner['last_viewed_at'],int(node.get('lastViewedAt') or 0))
                     parts = node.findall('./Media/Part')
                     paths = [p.get('file') for p in parts if p.get('file')]
                     if not paths:
@@ -51,6 +60,10 @@ async def plex_summary(values):
                             result['errors'].append(dict(source=library['title'], error='Missing file size')); continue
                         # Exact paths collapse combined libraries; distinct versions still consume bytes.
                         result['paths'][path] = max(result['paths'].get(path,0),int(size))
+                    for media in node.findall('Media'):
+                        for part in media.findall('Part'):
+                            if part.get('file') and part.get('size') is not None:
+                                result['catalogue_files'].append(plex_file(node,media,part,library,owner))
                     if kind == 'movie': result['videos' if personal else 'movies'].add(identity(node,library))
                     elif kind == 'show':
                         result['shows'].add(node.get('grandparentGuid') or shows.get(node.get('grandparentRatingKey')) or (library['key'],node.get('grandparentRatingKey') or node.get('ratingKey')))
@@ -61,10 +74,21 @@ async def plex_summary(values):
                 result['errors'].append(dict(source=library['title'],error=audit.error_label(exc)))
             return result
     results = await asyncio.gather(*(scan(library) for library in libraries))
-    paths, sources, errors = {}, [], []
+    paths, sources, errors = {}, [], [];catalogue_files={};catalogue_owners={}
     sets = {name:set() for name in ('movies','shows','tracks','videos','photos','episode_paths')}
     for result in results:
         if result is None: continue
+        for file in result['catalogue_files']:
+            old=catalogue_files.get(file['path'])
+            if old:old['sources']=sorted(set(old['sources']+file['sources']))
+            else:catalogue_files[file['path']]=file
+        for owner in result['catalogue_owners']:
+            if owner['kind'] not in ('movie','show'):continue
+            key=(owner['kind'],owner['guid']);old=catalogue_owners.get(key)
+            if old:
+                old['rating_keys']=sorted(set(old['rating_keys']+owner['rating_keys']))
+                old['last_viewed_at']=max(old['last_viewed_at'],owner['last_viewed_at'])
+            else:catalogue_owners[key]=owner
         for path,size in result['paths'].items(): paths[path] = max(paths.get(path,0),size)
         for name in sets: sets[name].update(result[name])
         # Keep errors compact; count affected entries without returning media paths/titles.
@@ -75,7 +99,8 @@ async def plex_summary(values):
             movies=counts['movies'],shows=counts['shows'],episodes=counts['episode_paths'],tracks=counts['tracks'],videos=counts['videos'],photos=counts['photos']))
     return dict(checked_at=datetime.utcnow().isoformat(),provider='Plex',sources=sources,errors=errors,complete=not errors,
         total_bytes=sum(paths.values()),file_count=len(paths),movies=len(sets['movies']),shows=len(sets['shows']),episodes=len(sets['episode_paths']),
-        tracks=len(sets['tracks']),videos=len(sets['videos']),photos=len(sets['photos']))
+        tracks=len(sets['tracks']),videos=len(sets['videos']),photos=len(sets['photos']),
+        _catalogue=dict(checked_at=datetime.utcnow().isoformat(),complete=not errors,errors=errors,files=list(catalogue_files.values()),owners=list(catalogue_owners.values())))
 
 
 async def arr_summary(values):
@@ -138,6 +163,10 @@ async def summary(db, values=None, *, refresh=False):
             audit.save(db,'inventory-summary',report)
             return report
         report['schema_version'] = SCHEMA_VERSION
+        catalogue=report.pop('_catalogue',None)
+        if catalogue is not None:
+            audit.save(db,'plex-file-catalogue',catalogue)
+            audit.save(db,'plex-history-catalogue',{k:v for k,v in catalogue.items() if k!='files'})
         report['has_complete_snapshot'] = bool(report['complete'])
         if report['provider']=='Arr' and plex_configured: report.setdefault('fallback_reason','Plex unavailable')
         audit.save(db, 'inventory-summary', report)

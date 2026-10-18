@@ -32,6 +32,9 @@ class PlexInventoryTests(unittest.IsolatedAsyncioTestCase):
             report=await inv.summary(self.db,CFG)
             self.assertEqual((report['provider'],report['total_bytes'],report['file_count'],report['movies'],report['shows'],report['episodes'],report['tracks'],report['videos']),('Plex',870,7,3,1,1,1,1))
             self.assertTrue(report['complete']);arr.assert_not_awaited()
+            catalogue=audit.state(self.db,'plex-file-catalogue')
+            self.assertEqual(len(catalogue['files']),7);self.assertNotIn('_catalogue',report)
+            shared=next(f for f in catalogue['files'] if f['path']=='/one.mkv');self.assertEqual(shared['sources'],['All','Kids'])
             await inv.summary(self.db,CFG);self.assertEqual(client.libraries.await_count,1)
     async def test_all_pages_beyond_250_and_unknown_total(self):
         client=AsyncMock();calls=[]

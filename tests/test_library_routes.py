@@ -22,6 +22,21 @@ class RouteTests(unittest.TestCase):
         self.client=TestClient(main.app)
     def tearDown(self):
         main.app.dependency_overrides.clear();self.db.close();self.engine.dispose()
+
+    def test_large_plex_files_html_api_pagination_and_authorization(self):
+        files=[dict(path=f'/custom/{i}.mkv',title=f'Large {i}',year=2020,kind='movie',tmdb_id=i,sources=['Custom'],bytes=(26+i)*1_000_000_000,codec='hevc',resolution='4k',audio_codec='aac',audio_channels='2',bitrate_mbps=10,edition='',episode=None) for i in range(301)]
+        save(self.db,'plex-file-catalogue',dict(files=files,complete=True,checked_at=datetime.utcnow().isoformat()))
+        with patch.object(main,'current_user',return_value=self.user),patch.object(lib,'library_inventory',AsyncMock(return_value=([],[]))):
+            api=self.client.get('/api/libraries/space?source=Custom&managed=unmanaged&page=2&page_size=10')
+            self.assertEqual(api.status_code,200,api.text);self.assertEqual(api.json()['total_count'],301)
+            html=self.client.get('/libraries/space?source=Custom&managed=unmanaged&page=2&page_size=10')
+            self.assertEqual(html.status_code,200,html.text);self.assertIn('Large 290',html.text);self.assertIn('Outside Arr',html.text)
+            self.assertIn('page=3',html.text);self.assertEqual(len(api.json()['items']),10)
+            self.assertEqual(self.client.get('/api/libraries/space?min_gb=-1').status_code,422)
+        main.app.dependency_overrides[main.require_auth]=lambda:AuthContext('reader',False)
+        self.assertEqual(self.client.get('/api/libraries/space').status_code,403)
+        with patch.object(main,'current_user',return_value=SimpleNamespace(is_admin=False)):
+            self.assertEqual(self.client.get('/libraries/space').status_code,403)
     def test_replacements_html_api_batch_review_and_auth(self):
         from app.services import replacements as r
         candidate=dict(key='candidate',title='Movie.2020.2160p.HEVC.SDR.AAC2.0',bytes=10_000_000_000,saving_bytes=40_000_000_000,audio='Stereo',format='WEBDL-2160p',codec='HEVC',range='SDR label')
@@ -68,7 +83,7 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(self.client.post('/libraries/audit/run',data={'audit':'storage'},headers={'Origin':'http://testserver'}).status_code,403)
 
     def test_overview_uses_same_plex_inventory_in_html_and_api(self):
-        inventory=dict(schema_version=3,provider='Plex',complete=True,checked_at=datetime.utcnow().isoformat(),errors=[],total_bytes=28_000_000_000_000,movies=1382,shows=185,episodes=8300,tracks=23909,videos=231,photos=0,sources=[dict(source='Music',kind='artist',tracks=23909,bytes=800_000_000_000)])
+        inventory=dict(schema_version=4,provider='Plex',complete=True,checked_at=datetime.utcnow().isoformat(),errors=[],total_bytes=28_000_000_000_000,movies=1382,shows=185,episodes=8300,tracks=23909,videos=231,photos=0,sources=[dict(source='Music',kind='artist',tracks=23909,bytes=800_000_000_000)])
         save(self.db,'inventory-summary',inventory)
         with patch.object(main,'current_user',return_value=self.user):
             html=self.client.get('/admin?period=30d')

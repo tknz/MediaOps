@@ -6,7 +6,7 @@
 <nav class="audit-tabs" aria-label="Library checks">
 {% for key,label,count in [('health','Health',h.issue_count if h else '—'),('duplicates','Duplicates',s.duplicates|length if s else '—'),('storage','Storage',payload.candidate_count if s else '—')] %}
 <a class="{{ 'active' if view==key else '' }}" href="?view={{ key }}&source={{ payload.source|urlencode }}{% if payload.target_mbps %}&target_mbps={{ payload.target_mbps }}{% endif %}" {% if view==key %}aria-current="page"{% endif %}>{{ label }} <span>{{ count }}</span></a>{% endfor %}
-<a href="/libraries/replacements">Largest 50 →</a></nav>
+<a href="/libraries/space">Large Plex files →</a><a href="/libraries/replacements">Largest 50 →</a></nav>
 {% if request.query_params.get('running') %}<p role="status" class="audit-notice">Check started. <a href="?view={{ view }}">Refresh results</a></p>{% endif %}
 {% if view=='health' %}
 <div class="section-head audit-toolbar"><p class="muted">Every 15 min{% if h %} · Checked {{ h.checked_at|server_time }}{% endif %}</p><form method="post" action="/libraries/audit/run"><input type="hidden" name="view" value="health"><button name="audit" value="health">Check now</button></form></div>

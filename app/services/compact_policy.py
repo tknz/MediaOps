@@ -9,6 +9,35 @@ SURROUND = r'(?i)(?<!\d)5[ .]1(?!\d)'
 LOSSLESS = r'(?i)true[ ._-]?hd|dts[ ._-]?hd|dts[ ._-]?x|(?<!\d)7[ .]1(?!\d)'
 REJECT_SCORE = -10000
 
+PREFERENCE_DEFAULTS = dict(replacement_language_id='1', replacement_4k_codec='hevc', replacement_hdr='prefer_sdr',
+    replacement_audio='stereo', replacement_lossless='exclude', replacement_max_gb='25', replacement_min_percent='20', replacement_min_gb='2', replacement_scan_limit='50')
+
+def preferences(values=None):
+    from .settings_store import all_settings
+    import math
+    values=all_settings() if values is None else values
+    result={key:values.get(key,default) for key,default in PREFERENCE_DEFAULTS.items()}
+    for key in ('replacement_language_id','replacement_max_gb','replacement_min_percent','replacement_min_gb','replacement_scan_limit'):
+        try:value=float(result[key]);assert math.isfinite(value)
+        except (ValueError,TypeError,AssertionError):value=float(PREFERENCE_DEFAULTS[key])
+        result[key]=max(0,value)
+    result['replacement_min_percent']=min(95,result['replacement_min_percent'])
+    result['replacement_scan_limit']=int(max(1,min(500,result['replacement_scan_limit'])))
+    result['replacement_language_id']=int(result['replacement_language_id'])
+    if result['replacement_4k_codec'] not in ('hevc','any'):result['replacement_4k_codec']='hevc'
+    if result['replacement_hdr'] not in ('prefer_sdr','exclude','allow'):result['replacement_hdr']='prefer_sdr'
+    if result['replacement_audio'] not in ('stereo','smallest'):result['replacement_audio']='stereo'
+    if result['replacement_lossless'] not in ('exclude','allow'):result['replacement_lossless']='exclude'
+    return result
+
+def replacement_ceiling(movie,release,prefs):
+    caps=[]
+    if prefs['replacement_max_gb']:caps.append(int(prefs['replacement_max_gb']*1e9))
+    q=(release.get('quality') or {}).get('quality') or {}
+    maximum=movie.get('_replacement_definitions',{}).get(str(q.get('id')))
+    if maximum and movie.get('runtime'):caps.append(int(float(maximum)*float(movie['runtime'])*1024*1024))
+    return min(caps) if caps else None
+
 
 def spec(implementation, value, *, negate=False, name=None):
     fields = [dict(name=k,value=v) for k,v in value.items()] if isinstance(value,dict) else [dict(name='value',value=value)]

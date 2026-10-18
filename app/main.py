@@ -39,7 +39,7 @@ from .services.local_auth import hash_password, local_auth_configured, local_ple
 from .services.integration_tokens import DEFAULT_HOMEASSISTANT_SCOPES, active_integration_tokens, issue_integration_token, revoke_integration_token
 from .api_auth import AuthContext, require_auth
 from .services import libraries as library_service
-from .services import library_audit, library_summary, download_controls, duplicate_actions
+from .services import library_audit, library_summary, download_controls, duplicate_actions, space_review, compact_policy
 from .integrations import router as integrations_router
 from .services.webhooks import notify_homeassistant
 
@@ -1499,12 +1499,15 @@ async def _settings_from_form(request: Request) -> dict:
         'sonarr_api_key': sonarr[0]['api_key'] if sonarr else first('sonarr_api_key'),
         'radarr_instances': json.dumps(radarr),
         'sonarr_instances': json.dumps(sonarr),
+        'space_review_min_gb': first('space_review_min_gb', all_settings().get('space_review_min_gb','25')),
         'job_plex_live_seconds': first('job_plex_live_seconds', '30'),
         'job_plex_accounts_minutes': first('job_plex_accounts_minutes', '60'),
         'job_requests_minutes': first('job_requests_minutes', str(settings.sync_interval_minutes)),
         'homeassistant_webhook_url': first('homeassistant_webhook_url'),
         'homeassistant_webhook_token': first('homeassistant_webhook_token'),
     }
+    existing=all_settings()
+    values.update({key:first(key,existing.get(key,default)) for key,default in compact_policy.PREFERENCE_DEFAULTS.items()})
     if 'local_auth_username' in form:
         values['local_auth_username'] = first('local_auth_username', 'admin') or 'admin'
     password = first('local_auth_password')
@@ -3019,6 +3022,32 @@ def library_audit_api(source: str = 'all', page: int = 1, target_mbps: float | N
         return library_audit_payload(db, source, page, target_mbps)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+
+
+async def space_review_payload(db, q='', source='all', kind='all', managed='all', min_gb=None, sort='size', direction='desc', page=1, page_size=50):
+    if not library_service.plex_catalogue(db):await library_summary.summary(db,refresh=True)
+    inventory,errors=await library_service.library_inventory(db)
+    try:
+        threshold=float(all_settings().get('space_review_min_gb','25')) if min_gb is None else min_gb
+        result=space_review.page(db,inventory,q=q,source=source,kind=kind,managed=managed,min_gb=threshold,sort=sort,direction=direction,page=page,page_size=page_size)
+    except (ValueError,TypeError):raise HTTPException(422,'Invalid space-review filters')
+    if errors:result.update(complete=False,arr_unavailable=True)
+    return result
+
+
+@app.get('/api/libraries/space')
+async def space_review_api(q: str='', source: str='all', kind: str='all', managed: str='all', min_gb: float|None=None, sort: str='size', direction: str='desc', page: int=1, page_size: int=50,
+    db: Session=Depends(get_db), context: AuthContext=Depends(require_auth)):
+    if not context.is_admin:raise HTTPException(403,'Admin required')
+    return await space_review_payload(db,q,source,kind,managed,min_gb,sort,direction,page,page_size)
+
+
+@app.get('/libraries/space',response_class=HTMLResponse)
+async def space_review_page(request: Request,q: str='',source: str='all',kind: str='all',managed: str='all',min_gb: float|None=None,sort: str='size',direction: str='desc',page: int=1,page_size: int=50,db: Session=Depends(get_db)):
+    user=current_user(request,db)
+    if not user or not user.is_admin:raise HTTPException(403,'Admin required')
+    report=await space_review_payload(db,q,source,kind,managed,min_gb,sort,direction,page,page_size)
+    return templates.TemplateResponse('space_review.html',dict(request=request,user=user,report=report))
 
 
 @app.get('/libraries/audit/report', response_class=HTMLResponse)
